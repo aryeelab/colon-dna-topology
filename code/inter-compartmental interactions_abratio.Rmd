@@ -349,7 +349,6 @@ ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_hc
  
 
 
-
 # Aging WI-38 fibroblasts: Prepare a long format A/B ratio data frame
 ```{r }
 samples <- c('Wi38_16_1','Wi38_16_2','Wi38_30_1','Wi38_30_2','Wi38_40_1','Wi38_40_2','Wi38_46_1','Wi38_46_2')
@@ -358,23 +357,18 @@ rds <- paste0("../rds/ab_interactions_wi38_", bin_size, ".rds")
 if (file.exists(rds)) {
   df <- readRDS(rds)
 } else {
-  # Define compartments based on P16 eigenvector and P40-P16 hypomethylation
   comp <- readRDS("../rds/compartmentGR.rds")
-  wgbs <- readRDS("../rds/wgbs_iw48.rds")
-  tile_meth <- getMeth(wgbs, regions = comp, type = "raw", what = "perRegion")
-  # Quantile normalize  wi_38_p40_1 to  wi_38_p40_2 because of skewed distribution
-  o <- order(tile_meth[,"wi_38_p40_1"])
-  tile_meth[,"wi_38_p40_1"] <- sort(tile_meth[,"wi_38_p40_2"])[o]
-  comp$wi38_hypometh <- rowMeans(tile_meth[,c("wi_38_p16_1", "wi_38_p16_2")]) - tile_meth[,c("wi_38_p40_2")]
-  #comp$wi38_hypometh <- rowMeans(tile_meth[,c("wi_38_p16_1", "wi_38_p16_2")]) - rowMeans(tile_meth[,c("wi_38_p40_1", "wi_38_p40_2")])
+
+  # Get methylation
+  meth <- as.matrix(mcols(comp)[,x[grepl("wi_38_..._rep.*", x)]])
+  time <- sub("p", "", str_split_fixed(colnames(meth), "_", 4)[,3])
+  rep <- sub("rep", "", str_split_fixed(colnames(meth), "_", 5)[,4])
+  colnames(meth) <- paste0("Wi38_", time, "_", rep)
+  
+  # Define compartments based on P16 eigenvector and P40-P16 hypomethylation
+  comp$wi38_hypometh <- rowMeans(meth[,c("Wi38_16_1", "Wi38_16_2")]) - rowMeans(meth[,c("Wi38_40_1", "Wi38_40_2")])
   comp$wi38_comp <- ifelse(comp$Wi38_16_mean_eigen>0, "A", "B")
   comp$wi38_comp[comp$Wi38_16_mean_eigen>0 & comp$wi38_hypometh>0.1] <- "I"
-  #comp$wi38_comp[comp$Wi38_16_mean_eigen>0 & comp$wi38_hypometh_p30>0.1] <- "I"
-  table(comp$wi38_comp)
-  
-  time <- sub("p", "", str_split_fixed(sampleNames(wgbs), "_", 4)[,3])
-  rep <- str_split_fixed(sampleNames(wgbs), "_", 4)[,4]
-  sampleNames(wgbs) <- paste0("Wi38_", time, "_", rep)
   
   registerDoParallel(cores=4)
   df <- foreach(sample = samples, .combine=rbind) %dopar% {
@@ -395,7 +389,8 @@ if (file.exists(rds)) {
       gr <- unlist(tile(GRanges(chr, IRanges(1, ncol(mat) * as.numeric(bin_size))), width=as.numeric(bin_size)))
       idx <- findOverlaps(gr, comp, select = "first")
       gr$compartment <- comp$wi38_comp[idx]
-
+      gr$meth <- meth[idx,sample]
+      
       # >1Mb
       mat <- as.matrix(mat - band(mat, -10, 10))
       gr$a_ix_sum_1mb <- colSums(mat[gr$compartment=="A",], na.rm=TRUE)
@@ -407,12 +402,10 @@ if (file.exists(rds)) {
       gr$i_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="I",], na.rm=TRUE)
       gr$b_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="B",], na.rm=TRUE)
       
-      tile_meth <- getMeth(wgbs, regions = gr, type = "raw", what = "perRegion")
-      
-      gr %>% as.data.frame() %>% select(seqnames, start, compartment, 
+      gr %>% as.data.frame() %>% select(seqnames, start, compartment, meth,
                                         a_ix_sum_1mb, i_ix_sum_1mb, b_ix_sum_1mb,
                                         a_ix_mean_oe, i_ix_mean_oe, b_ix_mean_oe) %>% 
-        cbind(meth=tile_meth[,sample], sample=sample, time=str_split_fixed(sample, "_", 3)[,2], rep=str_split_fixed(sample, "_", 3)[,3])
+        cbind(sample=sample, time=str_split_fixed(sample, "_", 3)[,2], rep=str_split_fixed(sample, "_", 3)[,3])
     }
   }  
   
@@ -427,7 +420,7 @@ ab_ratio_oe = hypometh_bin + b_pos + b_sample
 
 ```{r}
 df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = paste(seqnames, start)) %>%
-  filter(time %in% c("16", "40") & sample!="Wi38_40_1") %>%
+  filter(time %in% c("16", "40")) %>%
   group_by(seqnames, start) %>% 
         mutate(hypomethylation = mean(meth[time=="16"], na.rm=TRUE) - meth) %>% ungroup() %>%
         mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 1), labels=c("<15%", "15%-20%", "20%-25%", ">25%"))) %>%
@@ -456,7 +449,7 @@ ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_wi
 
 ```{r}
 df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = paste(seqnames, start)) %>%
-  filter(time %in% c("16", "30", "40") & sample!="Wi38_40_1") %>%
+  filter(time %in% c("16", "30", "40")) %>%
   group_by(seqnames, start) %>% 
         mutate(hypomethylation40 = mean(meth[time=="16"], na.rm=TRUE) - mean(meth[time=="40"], na.rm=TRUE)) %>% ungroup() %>%
   filter(hypomethylation40 > 0.2)
@@ -477,7 +470,6 @@ coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geo
 ggsave("../plots/abratio_oe_by_time_relative_to_p16_wi38_p40_hypometh_regions.png", width=7, height=4)
 
 ```
-
 
 
 
