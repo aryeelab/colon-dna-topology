@@ -216,14 +216,13 @@ if (file.exists(rds)) {
   colnames(eigen) <- sub("_eigen", "", sub("rep", "", colnames(eigen)))
 
   # Get methylation
-  wgbs <- readRDS("../rds/wgbs_iw48.rds")
-  time <- sub("p", "", str_split_fixed(sampleNames(wgbs), "_", 4)[,3])
-  rep <- str_split_fixed(sampleNames(wgbs), "_", 4)[,4]
-  sampleNames(wgbs) <- paste0("Wi38_", time, "_", rep)
-  tile_meth <- getMeth(wgbs, regions = comp, type = "raw", what = "perRegion")
+  meth <- as.matrix(mcols(comp)[,x[grepl("wi_38_..._rep.*", x)]])
+  time <- sub("p", "", str_split_fixed(colnames(meth), "_", 4)[,3])
+  rep <- sub("rep", "", str_split_fixed(colnames(meth), "_", 5)[,4])
+  colnames(meth) <- paste0("Wi38_", time, "_", rep)
   
   # Define compartments based on P16 eigenvector and P40-P16 hypomethylation
-  comp$wi38_hypometh <- rowMeans(tile_meth[,c("Wi38_16_1", "Wi38_16_2")]) - tile_meth[,c("Wi38_40_2")]
+  comp$wi38_hypometh <- rowMeans(meth[,c("Wi38_16_1", "Wi38_16_2")]) - rowMeans(meth[,c("Wi38_40_1", "Wi38_40_2")])
   comp$wi38_comp <- ifelse(comp$Wi38_16_mean_eigen>0, "A", "B")
   comp$wi38_comp[comp$Wi38_16_mean_eigen>0 & comp$wi38_hypometh>0.1] <- "I"
   #table(comp$wi38_comp)
@@ -245,7 +244,7 @@ eigen = hypometh_bin + b_pos + b_sample
 
 ```{r}
 df2 <- df %>% mutate(chr_pos = paste(seqnames, start)) %>%
-  filter(time %in% c("16", "40") & sample!="Wi38_40_1") %>%
+  filter(time %in% c("16", "40")) %>%
   group_by(seqnames, start) %>% 
         mutate(hypomethylation = mean(meth[time=="16"], na.rm=TRUE) - meth) %>% ungroup() %>%
         mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 1), labels=c("<15%", "15%-20%", "20%-25%", ">25%"))) %>%
@@ -274,7 +273,7 @@ ggsave("../plots/eigen_by_hypomethylation_relative_to_minimally_hypometh_wi38_p4
 
 ```{r}
 df2 <- df %>% mutate(chr_pos = paste(seqnames, start)) %>%
-  filter(time %in% c("16", "30", "40") & sample!="Wi38_40_1") %>%
+  filter(time %in% c("16", "30", "40")) %>%
   group_by(seqnames, start) %>% 
         mutate(hypomethylation40 = mean(meth[time=="16"], na.rm=TRUE) - mean(meth[time=="40"], na.rm=TRUE)) %>% ungroup() %>%
   filter(hypomethylation40 > 0.20)
