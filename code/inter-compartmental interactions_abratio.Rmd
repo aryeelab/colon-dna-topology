@@ -237,7 +237,7 @@ coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
 coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = sub("hypomethylation_bin", "", name)) 
 coeff$name <- factor(coeff$name, levels=unique(coeff$name))
   
-coeff <- ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_tumor.png", width=7, height=4)
 ```
 
