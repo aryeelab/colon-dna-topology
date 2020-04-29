@@ -222,7 +222,7 @@ ab_ratio_oe = hypometh_bin + b_pos + b_sample
 df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = paste(seqnames, start)) %>%
   group_by(seqnames, start) %>% 
         mutate(hypomethylation = mean(meth[type=="Normal"], na.rm=TRUE) - meth) %>% ungroup() %>%
-        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 0.3,  1), labels=c("<15%", "15%-20%", "20%-25%", "25%-30%", ">30%")))
+        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 1), labels=c("<15%", "15%-20%", "20%-25%", ">25%")))
 
 df_b <- df2 %>% filter(type=="Tumor"  & compartment=="B") 
 fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
