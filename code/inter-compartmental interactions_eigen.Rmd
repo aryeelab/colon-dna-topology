@@ -1,0 +1,300 @@
+---
+title: "Inter-compartmental interactions (Eigenvector method)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(GenomicRanges)
+library(foreach)
+library(doParallel)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(bsseq)
+library(Matrix)
+library(reshape2)
+library(tidyverse)
+library(cowplot)
+
+date()
+bin_size <- "100000"
+chrs <- paste0("chr", 1:22)
+
+scaleCols <- c("#4daf4a", "#984ea3")
+names( scaleCols ) <- c("Normal", "Tumor")
+scaleCol <- scale_color_manual(values=scaleCols)
+scaleFill <- scale_fill_manual(values=scaleCols)
+comp_a_col <- "#0002aa"
+comp_b_col <- "#f7cd46"
+comp_i_col <- "#66BFE3"
+scaleCompCols <- c(comp_a_col, comp_i_col, comp_b_col)
+names( scaleCompCols ) <- c("A", "I", "B")
+scaleCompCol <- scale_color_manual(values=scaleCompCols)
+scaleCompFill <- scale_fill_manual(values=scaleCompCols)
+```
+
+
+# Tumor/Normal: Prepare a long format eigen/meth data frame
+```{r }
+comp <- readRDS("../rds/subcompartment_labels_annotate.rds")
+meth_gr <- readRDS("../rds/compartmentGR.rds")
+
+# Not used: 'MGH1904-sb','MGH1904-sb2','BRD3170N-sb','BRD3462N-sb','BRD3462N-sb2','BRD3162N-sb','BRD3409N-sb','BRD3409N-sb2'
+hic_samples <- c('BRD3179N','BRD3187N','BRD3328N','BRD3462N','BRD3170N-sb2','BRD3162N-sb2','BRD3409N',
+                 'BRD3179','BRD3187','MGH1904','MGH8416','BRD3162','MGH2834','MGH5328','MGH2231-sb2','MGH3535','BRD3462','BRD3412','BRD3378') 
+
+x <- colnames(mcols(meth_gr))
+meth <- mcols(meth_gr)[,x[grepl("rep1_opensea", x)]]
+colnames(meth) <- sub("_rep1_opensea", "", colnames(meth))
+eigen <- mcols(meth_gr)[,x[grepl("rep1_eigen", x)]]
+colnames(eigen) <- sub("_rep1_eigen", "", colnames(eigen))
+colMeans(!is.na(meth))
+
+rds <- paste0("../rds/eigen_", bin_size, ".rds")
+if (file.exists(rds)) {
+  df <- readRDS(rds)
+} else {
+  registerDoParallel(cores=4)
+  df <- foreach(sample = hic_samples, .combine=rbind) %dopar% {
+    # Drop the -sb* suffix for the low coverage samples for matching with methylation
+    sample <- sub("-sb.*", "", sample)
+    df2 <- foreach (chr=chrs, .combine=rbind) %do% {
+      idx <- seqnames(granges(meth_gr))==chr
+      gr <- granges(meth_gr)[idx]
+      
+      if (sample %in% colnames(eigen)) {
+        gr$eigen <- eigen[idx, sample]  
+      } else {gr$eigen <- NA}
+      if (sample %in% colnames(meth)) {
+        gr$meth <- meth[idx, sample]  
+      } else {gr$meth <- NA}
+      
+      idx <- findOverlaps(gr, comp, select = "first")
+      gr$compartment <- comp$subComp[idx]
+
+      gr %>% as.data.frame() %>% select(seqnames, start, compartment, eigen, meth) %>% 
+        cbind(sample=sample, type=ifelse(grepl("N", sample), "Normal", "Tumor"))
+    }
+  }  
+  df$type <- relevel(df$type, ref="Normal")
+  df$compartment <- factor(df$compartment, levels=c("A", "I", "B"))
+  saveRDS(df, file=rds)
+}
+
+```
+
+
+# PC1 difference vs hypomethylation relative to minimally hypomethylated regions
+
+eigen = hypometh_bin + b_pos + b_sample 
+
+```{r}
+df2 <- df %>% mutate(chr_pos = paste(seqnames, start)) %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation = mean(meth[type=="Normal"], na.rm=TRUE) - meth) %>% ungroup() %>%
+        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 1), labels=c("<15%", "15%-20%", "20%-25%", ">25%")))
+
+df_b <- df2 %>% filter(type=="Tumor" & seqnames=="chr1" & compartment=="B") 
+fit <- lmer(eigen ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(type=="Tumor" & seqnames=="chr1" & compartment=="I") 
+fit <- lmer(eigen ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = sub("hypomethylation_bin", "", name)) 
+coeff$name <- factor(coeff$name, levels=unique(coeff$name))
+
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("PC1 Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/eigen_by_hypomethylation_relative_to_minimally_hypometh_tumor.png", width=7, height=4)
+```
+
+
+
+# HCT116 AZA/DMSO: Prepare a long format eigen/meth data frame
+```{r }
+comp <- readRDS("../rds/granges_compI_HCT116.rds")
+meth_gr <- readRDS("../rds/compartmentGR.rds")
+
+samples <- c('HCT116.5AZA.24h_rep1','HCT116.5AZA.24h_rep2','HCT116.DMSO.24h_rep1','HCT116.DMSO.24h_rep2')
+x <- colnames(mcols(meth_gr))
+meth <- mcols(meth_gr)[,x[grepl("_opensea", x)]]
+colnames(meth) <- sub("_opensea", "", colnames(meth))
+eigen <- mcols(meth_gr)[,x[grepl("_eigen", x)]]
+colnames(eigen) <- sub("_eigen", "", colnames(eigen))
+
+# Rename meth samples 3,4 to 1,2
+colnames(meth)[colnames(meth)=="HCT116.5AZA.24h_rep3"] <- "HCT116.5AZA.24h_rep1"
+colnames(meth)[colnames(meth)=="HCT116.5AZA.24h_rep4"] <- "HCT116.5AZA.24h_rep2"
+colnames(meth)[colnames(meth)=="HCT116.DMSO.24h_rep3"] <- "HCT116.DMSO.24h_rep1"
+colnames(meth)[colnames(meth)=="HCT116.DMSO.24h_rep4"] <- "HCT116.DMSO.24h_rep2"
+
+
+rds <- paste0("../rds/eigen_hct116_aza_", bin_size, ".rds")
+if (file.exists(rds)) {
+  df <- readRDS(rds)
+} else {
+  registerDoParallel(cores=4)
+  df <- foreach(sample = samples, .combine=rbind) %dopar% {
+    df2 <- foreach (chr=chrs, .combine=rbind) %do% {
+      idx <- seqnames(granges(meth_gr))==chr
+      gr <- granges(meth_gr)[idx]
+      
+      if (sample %in% colnames(eigen)) {
+        gr$eigen <- eigen[idx, sample]  
+      } else {gr$eigen <- NA}
+      if (sample %in% colnames(meth)) {
+        gr$meth <- meth[idx, sample]  
+      } else {gr$meth <- NA}
+      
+      idx <- findOverlaps(gr, comp, select = "first")
+      gr$compartment <- comp$subComp_HCT116[idx]
+      
+      rep <- str_split_fixed(sample, "_rep", 2)[2]
+      
+      gr %>% as.data.frame() %>% select(seqnames, start, compartment, eigen, meth) %>% 
+        cbind(sample=sample, rep=rep, type=ifelse(grepl("AZA", sample), "AZA", "DMSO"))
+    }
+  }  
+  df$type <- relevel(df$type, ref="DMSO")
+  df$compartment <- factor(df$compartment, levels=c("A", "I", "B"))
+  saveRDS(df, file=rds)
+}
+```
+
+
+
+# HCT116 Aza PC1 difference (O/E) relative to minimally hypomethylated regions
+
+eigen = hypometh_bin + b_pos + b_sample 
+
+```{r}
+df2 <- df %>% mutate(chr_pos = paste(seqnames, start)) %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation = mean(meth[type=="DMSO"], na.rm=TRUE) - meth) %>% ungroup() %>%
+        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25,  1), labels=c("<15%", "15%-20%", "20%-25%", ">25%")))
+
+df_b <- df2 %>% filter(compartment=="B") 
+fit <- lmer(eigen ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(compartment=="I") 
+fit <- lmer(eigen ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = sub("hypomethylation_bin", "", name))
+coeff$name <- factor(coeff$name, levels=unique(coeff$name))
+ 
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("PC1 Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/eigen_by_hypomethylation_relative_to_minimally_hypometh_hct116.png", width=7, height=4)
+```
+
+
+
+
+# Aging WI-38 fibroblasts: Prepare a long format eigen/meth data frame
+```{r }
+samples <- c('Wi38_16_1','Wi38_16_2','Wi38_30_1','Wi38_30_2','Wi38_40_1','Wi38_40_2','Wi38_46_1','Wi38_46_2')
+
+rds <- paste0("../rds/eigen_wi38_", bin_size, ".rds")
+if (file.exists(rds)) {
+  df <- readRDS(rds)
+} else {
+
+  comp <- readRDS("../rds/compartmentGR.rds")
+  
+  # Get eigenvectors (PC1)
+  x <- colnames(mcols(comp))
+  eigen <- mcols(comp)[,x[grepl("Wi38_.._rep", x)]]
+  colnames(eigen) <- sub("_eigen", "", sub("rep", "", colnames(eigen)))
+
+  # Get methylation
+  wgbs <- readRDS("../rds/wgbs_iw48.rds")
+  time <- sub("p", "", str_split_fixed(sampleNames(wgbs), "_", 4)[,3])
+  rep <- str_split_fixed(sampleNames(wgbs), "_", 4)[,4]
+  sampleNames(wgbs) <- paste0("Wi38_", time, "_", rep)
+  tile_meth <- getMeth(wgbs, regions = comp, type = "raw", what = "perRegion")
+  
+  # Define compartments based on P16 eigenvector and P40-P16 hypomethylation
+  comp$wi38_hypometh <- rowMeans(tile_meth[,c("Wi38_16_1", "Wi38_16_2")]) - tile_meth[,c("Wi38_40_2")]
+  comp$wi38_comp <- ifelse(comp$Wi38_16_mean_eigen>0, "A", "B")
+  comp$wi38_comp[comp$Wi38_16_mean_eigen>0 & comp$wi38_hypometh>0.1] <- "I"
+  #table(comp$wi38_comp)
+  
+  df <- foreach(sample = samples, .combine=rbind) %do% {
+      comp %>% as.data.frame() %>% select(seqnames, start) %>% 
+        cbind(compartment=comp$wi38_comp, eigen=eigen[,sample], meth=tile_meth[,sample], sample=sample,
+              time=str_split_fixed(sample, "_", 3)[,2], rep=str_split_fixed(sample, "_", 3)[,3])
+  }  
+  saveRDS(df, file=rds)
+}
+
+```
+
+
+# WI-38 fibroblasts P40 vs P16: PC1 relative to minimally hypomethylated regions
+
+eigen = hypometh_bin + b_pos + b_sample 
+
+```{r}
+df2 <- df %>% mutate(chr_pos = paste(seqnames, start)) %>%
+  filter(time %in% c("16", "40") & sample!="Wi38_40_1") %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation = mean(meth[time=="16"], na.rm=TRUE) - meth) %>% ungroup() %>%
+        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 1), labels=c("<15%", "15%-20%", "20%-25%", ">25%"))) %>%
+  ungroup()
+
+df_b <- df2 %>% filter(compartment=="B") 
+fit <- lmer(eigen ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(compartment=="I") 
+fit <- lmer(eigen ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = sub("hypomethylation_bin", "", name))
+coeff$name <- factor(coeff$name, levels=unique(coeff$name))
+ 
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("PC1 Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/eigen_by_hypomethylation_relative_to_minimally_hypometh_wi38_p40_vs_p16.png", width=7, height=4)
+```
+
+
+
+# Aging WI-38 fibroblasts by time: PC1 relative to early passage
+
+```{r}
+df2 <- df %>% mutate(chr_pos = paste(seqnames, start)) %>%
+  filter(time %in% c("16", "30", "40") & sample!="Wi38_40_1") %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation40 = mean(meth[time=="16"], na.rm=TRUE) - mean(meth[time=="40"], na.rm=TRUE)) %>% ungroup() %>%
+  filter(hypomethylation40 > 0.20)
+
+df_b <- df2 %>% filter(compartment=="B") 
+fit <- lmer(eigen ~ time + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(compartment=="I") 
+fit <- lmer(eigen ~  time + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff <- coeff %>% filter(grepl("time", name))%>% mutate(name = sub("time", "P", name))
+
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("WI-38 Passage Number") + ylab("PC1 Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/eigen_by_time_relative_to_p16_wi38_p40_hypometh_regions.png", width=7, height=4)
+
+```
+
+
+
