@@ -224,11 +224,11 @@ df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = pa
         mutate(hypomethylation = mean(meth[type=="Normal"], na.rm=TRUE) - meth) %>% ungroup() %>%
         mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 0.3,  1), labels=c("<15%", "15%-20%", "20%-25%", "25%-30%", ">30%")))
 
-df_b <- df2 %>% filter(type=="Tumor" & seqnames=="chr1" & compartment=="B") 
+df_b <- df2 %>% filter(type=="Tumor"  & compartment=="B") 
 fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
 coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
 
-df_i <- df2 %>% filter(type=="Tumor" & seqnames=="chr1" & compartment=="I") 
+df_i <- df2 %>% filter(type=="Tumor"  & compartment=="I") 
 fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_i)
 coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
 
