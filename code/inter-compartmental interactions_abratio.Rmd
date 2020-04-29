@@ -1,0 +1,480 @@
+---
+title: "Inter-compartmental interactions (A/B ratio)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(GenomicRanges)
+library(foreach)
+library(doParallel)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(bsseq)
+library(Matrix)
+library(reshape2)
+library(tidyverse)
+library(cowplot)
+
+date()
+bin_size <- "100000"
+chrs <- paste0("chr", 1:22)
+
+scaleCols <- c("#4daf4a", "orange", "#984ea3")
+names( scaleCols ) <- c("Normal", "Adenoma", "Tumor")
+scaleCol <- scale_color_manual(values=scaleCols)
+scaleFill <- scale_fill_manual(values=scaleCols)
+comp_a_col <- "#0002aa"
+comp_b_col <- "#f7cd46"
+comp_i_col <- "#66BFE3"
+scaleCompCols <- c(comp_a_col, comp_i_col, comp_b_col)
+names( scaleCompCols ) <- c("A", "I", "B")
+scaleCompCol <- scale_color_manual(values=scaleCompCols)
+scaleCompFill <- scale_fill_manual(values=scaleCompCols)
+```
+
+
+# Tumor/Normal: Prepare a long format A/B ratio data frame
+```{r }
+comp <- readRDS("../rds/subcompartment_labels_annotate.rds")
+meth_gr <- readRDS("../rds/compartmentGR.rds")
+
+# Not used: 'MGH1904-sb','MGH1904-sb2','BRD3170N-sb','BRD3462N-sb','BRD3462N-sb2','BRD3162N-sb','BRD3409N-sb','BRD3409N-sb2'
+hic_samples <- c('BRD3179N','BRD3187N','BRD3328N','BRD3462N','BRD3170N-sb2','BRD3162N-sb2','BRD3409N',
+                 'Adenoma0410T',
+                 'BRD3179','BRD3187','MGH1904','MGH8416','BRD3162','MGH2834','MGH5328','MGH2231-sb2','MGH3535','BRD3462','BRD3412','BRD3378') 
+
+validation <- c("BRD3170N", "BRD3162N", "BRD3409N",
+                "BRD3378", "BRD3412", "BRD3462", "MGH3535")
+
+x <- colnames(mcols(meth_gr))
+meth <- mcols(meth_gr)[,x[grepl("rep1_opensea", x)]]
+colnames(meth) <- sub("_rep1_opensea", "", colnames(meth))
+#colMeans(!is.na(meth))
+
+rds <- paste0("../rds/ab_interactions_", bin_size, ".rds")
+if (file.exists(rds)) {
+  df <- readRDS(rds)
+} else {
+  registerDoParallel(cores=4)
+  df <- foreach(sample = hic_samples, .combine=rbind) %dopar% {
+    sparse_rds <- paste0("../terra/", sample, ".sparsehic.rds")
+    # Drop the -sb* suffix for the low coverage samples for matching with methylation
+    sample <- sub("-sb.*", "", sample)
+    x <- readRDS( sparse_rds )@resolutionNamedList[[bin_size]]
+    df2 <- foreach (chr=chrs, .combine=rbind) %do% {
+      #chr <- "chr1"
+      mat <- as.matrix(x[[chr]])
+      mat_oe <- melt(mat, varnames = c("x", "y"), value.name = "obs") %>% filter(y>=x) %>% 
+        mutate(d=y-x) %>%
+        group_by(d) %>% mutate(obs_exp = obs / mean(obs, na.rm=T)) %>% ungroup() %>% 
+        select(x,y,obs_exp) %>% spread(y,obs_exp) %>% column_to_rownames("x") %>%
+        as.matrix()
+      
+      mat[lower.tri(mat)] = t(mat)[lower.tri(mat)]
+      mat_oe[lower.tri(mat_oe)] = t(mat_oe)[lower.tri(mat_oe)]
+      
+      gr <- unlist(tile(GRanges(chr, IRanges(1, ncol(mat) * as.numeric(bin_size))), width=as.numeric(bin_size)))
+      idx <- findOverlaps(gr, comp, select = "first")
+      gr$compartment <- comp$subComp[idx]
+
+      # >1Mb interactions
+      mat <- as.matrix(mat - band(mat, -10, 10))
+      gr$a_ix_sum_1mb <- colSums(mat[gr$compartment=="A",], na.rm=TRUE)
+      gr$i_ix_sum_1mb <- colSums(mat[gr$compartment=="I",], na.rm=TRUE)
+      gr$b_ix_sum_1mb <- colSums(mat[gr$compartment=="B",], na.rm=TRUE)
+      
+      # O/E
+      gr$a_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="A",], na.rm=TRUE)
+      gr$i_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="I",], na.rm=TRUE)
+      gr$b_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="B",], na.rm=TRUE)
+      
+      idx <- findOverlaps(gr, meth_gr, select = "first")
+      if (sample %in% colnames(meth)) {
+        gr$meth <- meth[idx, sample]  
+      } else {
+        gr$meth <- NA
+      }
+      
+      df <- gr %>% as.data.frame() %>% select(seqnames, start, compartment, meth,
+                                        a_ix_sum_1mb, i_ix_sum_1mb, b_ix_sum_1mb,
+                                        a_ix_mean_oe, i_ix_mean_oe, b_ix_mean_oe) %>% 
+        cbind(sample=sample, type=ifelse(grepl("N", sample), "Normal", "Tumor"))
+      df
+    }
+  }  
+  df$type <- as.character(df$type)
+  df$type=ifelse(grepl("N", df$sample), "Normal", "Tumor")
+  df$type[grepl("Adenoma", df$sample)] <- "Adenoma"
+  df$type <- relevel(factor(df$type), ref="Normal")
+  df$compartment <- factor(df$compartment, levels=c("A", "I", "B"))
+  df$cohort = ifelse(df$sample %in% validation, "Cohort 2", "Cohort 1")
+  saveRDS(df, file=rds)
+}
+
+# Drop single adenoma sample
+df <- df %>% filter(type != "Adenoma")
+
+```
+
+
+
+# Tumor vs Normal A/B ratio (O/E, Both cohorts together)
+
+Each data point represents 1 sample
+```{r}
+# Compartments A,B O/E
+set.seed(124)
+df %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_ab.png", width=4, height=3)
+
+# Compartments I O/E
+set.seed(124)
+df %>% filter(compartment %in% c("I")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_i.png", width=2.5, height=3)
+
+```
+
+
+# Tumor vs Normal A/B ratio by cohort (O/E)
+
+Each data point represents 1 sample
+```{r}
+# Compartments A,B O/E - Cohort 1
+set.seed(124)
+df %>% filter(cohort=="Cohort 1" & compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_ab_cohort1.png", width=3, height=3)
+
+# Compartments A,B O/E - Cohort 2
+df %>% filter(cohort=="Cohort 2" & compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_ab_cohort2.png", width=3, height=3)
+
+
+# Compartment I O/E - Cohort 1
+set.seed(124)
+df %>% filter(cohort=="Cohort 1" & compartment %in% c("I")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_i_cohort1.png", width=2.5, height=3)
+
+# Compartment I O/E - Cohort 2
+set.seed(124)
+df %>% filter(cohort=="Cohort 2" & compartment %in% c("I")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_i_cohort2.png", width=2.5, height=3)
+
+```
+
+# Tumor vs Normal A/B ratio (Observed matrix)
+
+The versions below are the same as above but use the observed interaction matrix instead of O/E. (They look very similar)
+
+```{r}
+# Compartments A,B
+set.seed(124)
+df %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_1mb = log2(a_ix_sum_1mb/b_ix_sum_1mb)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_1mb=mean(ab_ratio_1mb, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_1mb, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/extra/abratio_normal_tumor_one_point_per_sample_comp_ab.png", width=4, height=3)
+
+# Compartment I
+set.seed(124)
+df %>% filter(compartment %in% c("I")) %>% mutate(ab_ratio_1mb = log2(a_ix_sum_1mb/b_ix_sum_1mb)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_1mb=mean(ab_ratio_1mb, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_1mb, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/extra/abratio_normal_tumor_one_point_per_sample_comp_i.png", width=2.5, height=3)
+
+```
+
+
+# A/B ratio difference (O/E) vs hypomethylation relative to minimally hypomethylated regions
+
+ab_ratio_oe = hypometh_bin + b_pos + b_sample 
+
+```{r}
+df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = paste(seqnames, start)) %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation = mean(meth[type=="Normal"], na.rm=TRUE) - meth) %>% ungroup() %>%
+        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 0.3,  1), labels=c("<15%", "15%-20%", "20%-25%", "25%-30%", ">30%")))
+
+df_b <- df2 %>% filter(type=="Tumor" & seqnames=="chr1" & compartment=="B") 
+fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(type=="Tumor" & seqnames=="chr1" & compartment=="I") 
+fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = sub("hypomethylation_bin", "", name)) %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_tumor.png", width=7, height=4)
+```
+
+
+
+# HCT116 AZA/DMSO: Prepare a long format A/B ratio data frame
+```{r }
+comp <- readRDS("../rds/granges_compI_HCT116.rds")
+meth_gr <- readRDS("../rds/compartmentGR.rds")
+
+samples <- c('HCT116-5AZA-24h-1','HCT116-5AZA-24h-2','HCT116-DMSO-24h-1','HCT116-DMSO-24h-2')
+x <- colnames(mcols(meth_gr))
+meth <- mcols(meth_gr)[,x[grepl("mean_opensea", x)]]
+colnames(meth) <- sub("_mean_opensea", "", colnames(meth))
+
+# Apply the same methylation values to the 2 HiC reps
+colnames(meth)[colnames(meth)=="HCT116.5AZA.24h"] <- "HCT116-5AZA-24h-1"
+colnames(meth)[colnames(meth)=="HCT116.DMSO.24h"] <- "HCT116-DMSO-24h-1"
+meth["HCT116-5AZA-24h-2"] <- meth["HCT116-5AZA-24h-1"]
+meth["HCT116-DMSO-24h-2"] <- meth["HCT116-DMSO-24h-1"]
+
+rds <- paste0("../rds/ab_interactions_hct116_aza_", bin_size, ".rds")
+if (file.exists(rds)) {
+  df <- readRDS(rds)
+} else {
+  registerDoParallel(cores=4)
+  df <- foreach(sample = samples, .combine=rbind) %dopar% {
+    sparse_rds <- paste0("../terra/", sample, ".sparsehic.rds")
+    x <- readRDS( sparse_rds )@resolutionNamedList[[bin_size]]
+    df2 <- foreach (chr=chrs, .combine=rbind) %do% {
+      #chr <- "chr1"
+      
+      mat <- as.matrix(x[[chr]])
+      mat_oe <- melt(mat, varnames = c("x", "y"), value.name = "obs") %>% filter(y>=x) %>% 
+        mutate(d=y-x) %>%
+        group_by(d) %>% mutate(obs_exp = obs / mean(obs, na.rm=T)) %>% ungroup() %>% 
+        select(x,y,obs_exp) %>% spread(y,obs_exp) %>% column_to_rownames("x") %>%
+        as.matrix()
+      
+      mat[lower.tri(mat)] = t(mat)[lower.tri(mat)]
+      mat_oe[lower.tri(mat_oe)] = t(mat_oe)[lower.tri(mat_oe)]
+      
+      gr <- unlist(tile(GRanges(chr, IRanges(1, ncol(mat) * as.numeric(bin_size))), width=as.numeric(bin_size)))
+      idx <- findOverlaps(gr, comp, select = "first")
+      
+      gr$compartment <- comp$subComp_HCT116[idx]
+
+      # >1Mb
+      mat <- as.matrix(mat - band(mat, -10, 10))
+      gr$a_ix_sum_1mb <- colSums(mat[gr$compartment=="A",], na.rm=TRUE)
+      gr$i_ix_sum_1mb <- colSums(mat[gr$compartment=="I",], na.rm=TRUE)
+      gr$b_ix_sum_1mb <- colSums(mat[gr$compartment=="B",], na.rm=TRUE)
+      
+      #  O/E
+      gr$a_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="A",], na.rm=TRUE)
+      gr$i_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="I",], na.rm=TRUE)
+      gr$b_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="B",], na.rm=TRUE)
+
+      idx <- findOverlaps(gr, meth_gr, select = "first")
+      if (sample %in% colnames(meth)) {
+        gr$meth <- meth[idx, sample]  
+      } else {
+        gr$meth <- NA
+      }
+      
+      rep <- str_split_fixed(sample, "-", 4)[4]
+      
+      gr %>% as.data.frame() %>% select(seqnames, start, compartment, meth,
+                                        a_ix_sum_1mb, i_ix_sum_1mb, b_ix_sum_1mb,
+                                        a_ix_mean_oe, a=i_ix_mean_oe, b_ix_mean_oe) %>% 
+        cbind(sample=sample, rep=rep, type=ifelse(grepl("AZA", sample), "AZA", "DMSO"))
+    }
+  }  
+  df$type <- relevel(df$type, ref="DMSO")
+  df$compartment <- factor(df$compartment, levels=c("A", "I", "B"))
+  saveRDS(df, file=rds)
+}
+```
+
+
+# HCT116 Aza A/B ratio difference (O/E) relative to minimally hypomethylated regions
+
+ab_ratio_oe = hypometh_bin + b_pos + b_sample 
+
+```{r}
+df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = paste(seqnames, start)) %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation = mean(meth[type=="DMSO"], na.rm=TRUE) - meth) %>% ungroup() %>%
+        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25,  1), labels=c("<15%", "15%-20%", "20%-25%", ">25%")))
+
+df_b <- df2 %>% filter(compartment=="B") 
+# Note: Convergence warning but max|grad| is low at 0.00334054
+fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(compartment=="I") 
+fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = sub("hypomethylation_bin", "", name))
+coeff$name <- factor(coeff$name, levels=unique(coeff$name))
+ 
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_hct116.png", width=7, height=4)
+```
+
+ 
+
+
+
+# Aging WI-38 fibroblasts: Prepare a long format A/B ratio data frame
+```{r }
+samples <- c('Wi38_16_1','Wi38_16_2','Wi38_30_1','Wi38_30_2','Wi38_40_1','Wi38_40_2','Wi38_46_1','Wi38_46_2')
+
+rds <- paste0("../rds/ab_interactions_wi38_", bin_size, ".rds")
+if (file.exists(rds)) {
+  df <- readRDS(rds)
+} else {
+  # Define compartments based on P16 eigenvector and P40-P16 hypomethylation
+  comp <- readRDS("../rds/compartmentGR.rds")
+  wgbs <- readRDS("../rds/wgbs_iw48.rds")
+  tile_meth <- getMeth(wgbs, regions = comp, type = "raw", what = "perRegion")
+  # Quantile normalize  wi_38_p40_1 to  wi_38_p40_2 because of skewed distribution
+  o <- order(tile_meth[,"wi_38_p40_1"])
+  tile_meth[,"wi_38_p40_1"] <- sort(tile_meth[,"wi_38_p40_2"])[o]
+  comp$wi38_hypometh <- rowMeans(tile_meth[,c("wi_38_p16_1", "wi_38_p16_2")]) - tile_meth[,c("wi_38_p40_2")]
+  #comp$wi38_hypometh <- rowMeans(tile_meth[,c("wi_38_p16_1", "wi_38_p16_2")]) - rowMeans(tile_meth[,c("wi_38_p40_1", "wi_38_p40_2")])
+  comp$wi38_comp <- ifelse(comp$Wi38_16_mean_eigen>0, "A", "B")
+  comp$wi38_comp[comp$Wi38_16_mean_eigen>0 & comp$wi38_hypometh>0.1] <- "I"
+  #comp$wi38_comp[comp$Wi38_16_mean_eigen>0 & comp$wi38_hypometh_p30>0.1] <- "I"
+  table(comp$wi38_comp)
+  
+  time <- sub("p", "", str_split_fixed(sampleNames(wgbs), "_", 4)[,3])
+  rep <- str_split_fixed(sampleNames(wgbs), "_", 4)[,4]
+  sampleNames(wgbs) <- paste0("Wi38_", time, "_", rep)
+  
+  registerDoParallel(cores=4)
+  df <- foreach(sample = samples, .combine=rbind) %dopar% {
+    #sample = samples[1] 
+    sparse_rds <- paste0("../terra/", sample, ".sparsehic.rds")
+    x <- readRDS( sparse_rds )@resolutionNamedList[[bin_size]]
+    foreach (chr=chrs, .combine=rbind) %do% {
+      mat <- as.matrix(x[[chr]])
+      mat_oe <- melt(mat, varnames = c("x", "y"), value.name = "obs") %>% filter(y>=x) %>% 
+        mutate(d=y-x) %>%
+        group_by(d) %>% mutate(obs_exp = obs / mean(obs, na.rm=T)) %>% ungroup() %>% 
+        select(x,y,obs_exp) %>% spread(y,obs_exp) %>% column_to_rownames("x") %>%
+        as.matrix()
+      
+      mat[lower.tri(mat)] = t(mat)[lower.tri(mat)]
+      mat_oe[lower.tri(mat_oe)] = t(mat_oe)[lower.tri(mat_oe)]
+      
+      gr <- unlist(tile(GRanges(chr, IRanges(1, ncol(mat) * as.numeric(bin_size))), width=as.numeric(bin_size)))
+      idx <- findOverlaps(gr, comp, select = "first")
+      gr$compartment <- comp$wi38_comp[idx]
+
+      # >1Mb
+      mat <- as.matrix(mat - band(mat, -10, 10))
+      gr$a_ix_sum_1mb <- colSums(mat[gr$compartment=="A",], na.rm=TRUE)
+      gr$i_ix_sum_1mb <- colSums(mat[gr$compartment=="I",], na.rm=TRUE)
+      gr$b_ix_sum_1mb <- colSums(mat[gr$compartment=="B",], na.rm=TRUE)
+
+      # O/E
+      gr$a_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="A",], na.rm=TRUE)
+      gr$i_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="I",], na.rm=TRUE)
+      gr$b_ix_mean_oe <- colMeans(mat_oe[gr$compartment=="B",], na.rm=TRUE)
+      
+      tile_meth <- getMeth(wgbs, regions = gr, type = "raw", what = "perRegion")
+      
+      gr %>% as.data.frame() %>% select(seqnames, start, compartment, 
+                                        a_ix_sum_1mb, i_ix_sum_1mb, b_ix_sum_1mb,
+                                        a_ix_mean_oe, i_ix_mean_oe, b_ix_mean_oe) %>% 
+        cbind(meth=tile_meth[,sample], sample=sample, time=str_split_fixed(sample, "_", 3)[,2], rep=str_split_fixed(sample, "_", 3)[,3])
+    }
+  }  
+  
+  saveRDS(df, file=rds)
+}
+```
+
+
+# WI-38 fibroblasts P40 vs P16: A/B ratio difference (O/E) relative to minimally hypomethylated regions
+
+ab_ratio_oe = hypometh_bin + b_pos + b_sample 
+
+```{r}
+df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = paste(seqnames, start)) %>%
+  filter(time %in% c("16", "40") & sample!="Wi38_40_1") %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation = mean(meth[time=="16"], na.rm=TRUE) - meth) %>% ungroup() %>%
+        mutate(hypomethylation_bin=cut(hypomethylation, c(-1, 0.15, 0.2, 0.25, 1), labels=c("<15%", "15%-20%", "20%-25%", ">25%"))) %>%
+  ungroup()
+
+df_b <- df2 %>% filter(compartment=="B") 
+fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(compartment=="I") 
+fit <- lmer(ab_ratio_oe ~  hypomethylation_bin + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = sub("hypomethylation_bin", "", name))
+coeff$name <- factor(coeff$name, levels=unique(coeff$name))
+ 
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_wi38_p40_vs_p16.png", width=7, height=4)
+```
+
+
+
+# Aging WI-38 fibroblasts by time: A/B ratio relative to early passage
+
+```{r}
+df2 <- df %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), chr_pos = paste(seqnames, start)) %>%
+  filter(time %in% c("16", "30", "40") & sample!="Wi38_40_1") %>%
+  group_by(seqnames, start) %>% 
+        mutate(hypomethylation40 = mean(meth[time=="16"], na.rm=TRUE) - mean(meth[time=="40"], na.rm=TRUE)) %>% ungroup() %>%
+  filter(hypomethylation40 > 0.2)
+
+df_b <- df2 %>% filter(compartment=="B") 
+fit <- lmer(ab_ratio_oe ~ time + (1|sample) + (1|chr_pos), data=df_b)
+coeff_b <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="B")
+
+df_i <- df2 %>% filter(compartment=="I") 
+fit <- lmer(ab_ratio_oe ~  time + (1|sample) + (1|chr_pos), data=df_i)
+coeff_i <- fixef(fit) %>% enframe() %>% cbind(confint(fit)[names(fixef(fit)),], compartment="I")
+
+coeff <- rbind(coeff_b, coeff_i)
+coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
+coeff <- coeff %>% filter(grepl("time", name))%>% mutate(name = sub("time", "P", name))
+
+coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("WI-38 Passage Number") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/abratio_oe_by_time_relative_to_p16_wi38_p40_hypometh_regions.png", width=7, height=4)
+
+```
+
+
+
+
