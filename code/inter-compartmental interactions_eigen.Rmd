@@ -86,6 +86,21 @@ if (file.exists(rds)) {
 ```
 
 
+# Show that for regions with normal PC1>1, the more hypomethylated regions shift more towards B
+```{r}
+scaleHypomethCols <- c(comp_i_col, comp_a_col)
+names( scaleHypomethCols ) <- c(">20%", "<20%")
+scaleHypomethCol <- scale_color_manual(values=scaleHypomethCols)
+
+df2 <- df %>% group_by(cohort, seqnames, start) %>% 
+        summarize(hypomethylation = mean(meth[type=="Normal"], na.rm=TRUE) - mean(meth[type=="Tumor"], na.rm=TRUE),
+               normal_eigen = mean(eigen[type=="Normal"], na.rm=TRUE),
+               eigen_diff = mean(eigen[type=="Tumor"], na.rm=TRUE) - mean(eigen[type=="Normal"], na.rm=TRUE)) %>% ungroup() 
+df2 %>% filter(normal_eigen>0) %>% mutate(Hypomethylation=ifelse(hypomethylation>=0.2, ">20%", "<20%")) %>% ggplot(aes(eigen_diff, color=Hypomethylation)) +  geom_line(stat="density", size=1)+ theme_cowplot() + scaleHypomethCol + xlab("Difference in PC1 (T - N)") + ggtitle("Regions with normal PC1>0") + ylab("Density")
+ggsave("../plots/eigen_diff_by_hypometh_in_pc1_gt0.png", width=6, height=3)
+```
+
+
 # PC1 difference vs hypomethylation relative to minimally hypomethylated regions
 
 eigen = hypometh_bin + b_pos + b_sample 
