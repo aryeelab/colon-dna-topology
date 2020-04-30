@@ -159,6 +159,14 @@ df %>% filter(cohort=="Cohort 1" & compartment %in% c("A", "B")) %>% mutate(ab_r
   scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_ab_cohort1.png", width=3, height=3)
 
+# Pvalue for above (Cohort 1)
+# Test if abs(abratio) is different in tumor vs normal
+x <- df %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(cohort, type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE))
+with(x[x$cohort=="Cohort 1",], 
+     wilcox.test(abs(ab_ratio_oe[type=="Normal"]), abs(ab_ratio_oe[type=="Tumor"])))
+
 # Compartments A,B O/E - Cohort 2
 df %>% filter(cohort=="Cohort 2" & compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
   group_by(type, sample, compartment) %>%
@@ -166,6 +174,14 @@ df %>% filter(cohort=="Cohort 2" & compartment %in% c("A", "B")) %>% mutate(ab_r
   ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
   scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_ab_cohort2.png", width=3, height=3)
+
+# Pvalue for above (Cohort 2)
+# Test if abs(abratio) is different in tumor vs normal
+x <- df %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(cohort, type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE))
+with(x[x$cohort=="Cohort 2",], 
+     wilcox.test(abs(ab_ratio_oe[type=="Normal"]), abs(ab_ratio_oe[type=="Tumor"])))
 
 
 # Compartment I O/E - Cohort 1
