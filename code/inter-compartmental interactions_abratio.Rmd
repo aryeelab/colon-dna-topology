@@ -120,32 +120,6 @@ df <- df %>% filter(type != "Adenoma")
 ```
 
 
-
-# Tumor vs Normal A/B ratio (O/E, Both cohorts together)
-
-Each data point represents 1 sample
-```{r}
-# Compartments A,B O/E
-set.seed(124)
-df %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
-  group_by(type, sample, compartment) %>%
-  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
-  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
-  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_ab.png", width=4, height=3)
-
-# Compartments I O/E
-set.seed(124)
-df %>% filter(compartment %in% c("I")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
-  group_by(type, sample, compartment) %>%
-  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
-  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
-  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_i.png", width=2.5, height=3)
-
-```
-
-
 # Tumor vs Normal A/B ratio by cohort (O/E)
 
 Each data point represents 1 sample
@@ -204,6 +178,34 @@ ggsave("../plots/abratio_oe_normal_tumor_one_point_per_sample_comp_i_cohort2.png
 
 ```
 
+
+# Tumor vs Normal A/B ratio (O/E, Both cohorts together)
+
+Each data point represents 1 sample
+```{r}
+# Compartments A,B O/E
+set.seed(124)
+df %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/extra/abratio_oe_normal_tumor_one_point_per_sample_comp_ab.png", width=4, height=3)
+
+# Compartments I O/E
+set.seed(124)
+df %>% filter(compartment %in% c("I")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/extra/abratio_oe_normal_tumor_one_point_per_sample_comp_i.png", width=2.5, height=3)
+
+```
+
+
+
+
 # Tumor vs Normal A/B ratio (Observed matrix)
 
 The versions below are the same as above but use the observed interaction matrix instead of O/E. (They look very similar)
@@ -230,7 +232,7 @@ ggsave("../plots/extra/abratio_normal_tumor_one_point_per_sample_comp_i.png", wi
 ```
 
 
-# A/B ratio difference (O/E) vs hypomethylation relative to minimally hypomethylated regions
+# A/B ratio difference (O/E) vs hypomethylation 
 
 ab_ratio_oe = hypometh_bin + b_pos + b_sample 
 
@@ -254,7 +256,7 @@ coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = s
 coeff$name <- factor(coeff$name, levels=unique(coeff$name))
   
 coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_tumor.png", width=7, height=4)
+ggsave("../plots/extra/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_tumor.png", width=7, height=4)
 ```
 
 
@@ -359,7 +361,7 @@ coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = s
 coeff$name <- factor(coeff$name, levels=unique(coeff$name))
  
 coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_hct116.png", width=7, height=4)
+ggsave("../plots/extra/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_hct116.png", width=7, height=4)
 ```
 
  
@@ -430,7 +432,7 @@ if (file.exists(rds)) {
 ```
 
 
-# WI-38 fibroblasts P40 vs P16: A/B ratio difference (O/E) relative to minimally hypomethylated regions
+# WI-38 fibroblasts P40 vs P16: A/B ratio difference (O/E) vs hypomethylation
 
 ab_ratio_oe = hypometh_bin + b_pos + b_sample 
 
@@ -456,7 +458,7 @@ coeff <- coeff %>% filter(grepl("hypomethylation_bin", name))%>% mutate(name = s
 coeff$name <- factor(coeff$name, levels=unique(coeff$name))
  
 coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("Hypomethylation") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18), axis.text.x = element_text(angle = 90, hjust=1)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-ggsave("../plots/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_wi38_p40_vs_p16.png", width=7, height=4)
+ggsave("../plots/extra/abratio_oe_by_hypomethylation_relative_to_minimally_hypometh_wi38_p40_vs_p16.png", width=7, height=4)
 ```
 
 
@@ -483,7 +485,7 @@ coeff$compartment <- factor(coeff$compartment, levels=c("I", "B"))
 coeff <- coeff %>% filter(grepl("time", name))%>% mutate(name = sub("time", "P", name))
 
 coeff %>% ggplot(aes(name, value, color=compartment)) + geom_point(size=4) + geom_errorbar(aes(ymin=`2.5 %`, ymax=`97.5 %`, color=compartment), size=2) + scaleCompCol + theme_bw()+ xlab("WI-38 Passage Number") + ylab("A/B Ratio Difference") + geom_hline(yintercept = 0, linetype=2) + facet_wrap(~compartment) + theme(legend.position = "none") + theme(text = element_text(size=18)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-ggsave("../plots/abratio_oe_by_time_relative_to_p16_wi38_p40_hypometh_regions.png", width=7, height=4)
+ggsave("../plots/extra/abratio_oe_by_time_relative_to_p16_wi38_p40_hypometh_regions.png", width=7, height=4)
 
 ```
 
