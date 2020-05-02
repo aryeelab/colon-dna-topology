@@ -1,0 +1,143 @@
+---
+title: "Epigenetic age and risk"
+output: html_notebook
+---
+
+
+```{r}
+library(readr)
+library(minfi)
+library(rtracklayer)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(cowplot)
+
+highrisk_col <- "magenta"
+lowrisk_col <- "#4daf4a"
+riskCols <- c(highrisk_col, lowrisk_col)
+names(riskCols) <- c("High", "Low")
+riskCol <- scale_color_manual(values=riskCols)
+riskFill <- scale_fill_manual(values=riskCols)
+
+annotateObject <- function( beta, array="IlluminaHumanMethylation450k", annotation="ilmn12.hg19" ){
+    beta <- SummarizedExperiment(beta)
+    tmp <- beta
+    beta <- RatioSet( assays( beta )[[1]] )
+    colData( beta ) <- colData( tmp )
+    annotation( beta ) <- c(
+        array=array,
+        annotation=annotation)
+    beta <- mapToGenome( beta )
+    seqlevelsStyle( beta ) <- "UCSC"
+    beta
+}
+
+cgi <- readRDS("../rds/cpgIslandExt_hg19.rds")
+seqlevelsStyle( cgi ) <- "UCSC"
+cgi_shore <- c(flank(cgi, width = 2000, start=TRUE),
+               flank(cgi, width = 2000, start=FALSE))
+open_sea <- gaps( reduce( c( cgi, cgi_shore ), ignore.strand=TRUE) )
+open_sea <- open_sea[!strand( open_sea ) %in% c("+", "-")]
+
+blocks <- readRDS("../rds/mergedBlocks.rds")
+comp <- readRDS("../rds/compDiffObject.rds")
+
+dir.create("../plots/extra", showWarnings = FALSE, recursive = TRUE)
+```
+
+
+
+```{r}
+# 450k / GPL13534
+tmp <- read_tsv("../external_data/2020_Wang/GSE132804-GPL13534_series_matrix.txt", comment="!")
+b_450k <- as.matrix(tmp[, -1])
+rownames(b_450k) <- tmp[,1, drop=TRUE]
+
+# EPIC / GPL21145
+tmp <- read_tsv("../external_data/2020_Wang/GSE132804-GPL21145_series_matrix.txt", comment="!")
+b_epic <- as.matrix(tmp[, -1])
+rownames(b_epic) <- tmp[,1, drop=TRUE]
+
+# Note: Only the 450k probes seem to be included in the EPIC dataset
+stopifnot(all(rownames(b_450k) == rownames(b_epic)))
+
+b <- cbind(b_450k, b_epic)
+rm(b_450k)
+rm(b_epic)
+
+b <- annotateObject(b, array="IlluminaHumanMethylation450k", annotation="ilmn12.hg19")
+open_sea_idx <- countOverlaps(granges(b), open_sea) > 0
+block_idx <- open_sea_idx & (countOverlaps(granges(b), blocks) > 0)
+non_block_idx <- open_sea_idx & (countOverlaps(granges(b), blocks) == 0)
+#a_idx <- open_sea_idx & (countOverlaps(granges(b), comp[which(comp$subComp=="A")]) > 0) & (countOverlaps(granges(b), blocks) == 0)
+a_idx <- open_sea_idx & (countOverlaps(granges(b), comp[which(comp$subComp=="A")]) > 0)
+i_idx <- open_sea_idx & (countOverlaps(granges(b), comp[which(comp$subComp=="I")]) > 0)
+b_idx <- open_sea_idx & (countOverlaps(granges(b), comp[which(comp$subComp=="B")]) > 0)
+
+# Output open-sea colon block CpGs
+cg_ids <- rownames(b)[block_idx]
+write.table(cg_ids, file="../tables/open_sea_colon_block_cg_ids_v1.txt", row.names=FALSE, col.names = FALSE, quote=FALSE)
+```
+
+```{r}
+block_meth <- colMeans(assays(b)[["Beta"]][block_idx,])
+a_meth <- colMeans(assays(b)[["Beta"]][a_idx,])
+b_meth <- colMeans(assays(b)[["Beta"]][b_idx,])
+
+# Alternate analysis using medians to confirm the finding that higher methylation in 
+# the high risk group is not due to outlier probe effects
+a_meth_med <- colMedians(assays(b)[["Beta"]][a_idx,])
+b_meth_med <- colMedians(assays(b)[["Beta"]][b_idx,])
+names(a_meth_med) <- names(b_meth_med) <- colnames(assays(b)[["Beta"]])
+```
+
+
+```{r}
+pd <- rbind(read_csv("../external_data/2020_wang/GSE132804-GPL13534_phenodata.csv"), 
+            read_csv("../external_data/2020_wang/GSE132804-GPL21145_phenodata.csv"))
+pd$crc_risk <- factor(pd$`Crc risk`, levels=c("Low", "Medium", "High"))
+stopifnot(names(block_meth) %in% pd$Accession)
+stopifnot(pd$Accession %in% names(block_meth))
+pd$block_meth <- block_meth[match(pd$Accession, names(block_meth))]
+pd$a_meth <- a_meth[match(pd$Accession, names(a_meth))]
+pd$b_meth <- b_meth[match(pd$Accession, names(b_meth))]
+pd$a_meth_med <- a_meth_med[match(pd$Accession, names(a_meth_med))]
+pd$b_meth_med <- b_meth_med[match(pd$Accession, names(b_meth_med))]
+pd$crc_risk <- relevel(pd$crc_risk, ref="High")
+pd$Sex <- pd$Gender
+dim(pd)
+```
+
+
+```{r}
+table(pd$`Array platform_id`, pd$crc_risk)
+```
+
+
+# Low risk block methylation by age
+```{r}
+pd %>% filter(crc_risk %in% c("Low")) %>%
+  mutate(age_bin = cut(Age, c(0, 40, 50, 60, 100), right=FALSE, labels=c("<40", "40-49", "50-59", ">60"))) %>%
+  ggplot(aes(age_bin, block_meth)) + geom_boxplot(fill="grey")  + theme_bw() + theme(legend.position = "none") + xlab("Age") + ylab("Block methylation") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + ggtitle("Low risk")
+ggsave("../plots/crc_low_risk_normal_colon_block_methylation_by_age.png", width=3, height=3)
+
+```
+
+
+# Block methylation vs low/high risk (line plot)
+```{r}
+pd %>% filter(crc_risk %in% c("Low", "High")) %>% ggplot(aes(Age, block_meth, color=crc_risk, fill=crc_risk)) + geom_point() + geom_smooth(method="lm") + theme_bw() + riskCol + riskFill + 
+  ylab("Block methylation level") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme_cowplot() + theme(legend.position = c(0.05, 0.9)) 
+ggsave("../plots/crc_risk_and_normal_colon_block_methylation_with_line.png", width=5, height=3.5)
+```
+
+# Verify finding using colmedian values and B minus A methylation to adjust for inter-study effects
+```{r}
+pd %>% ggplot(aes(crc_risk, b_meth_med-a_meth_med, fill=crc_risk)) + geom_boxplot() + geom_smooth(method="lm") + theme_bw() + geom_hline(yintercept = 0)
+ggsave("../plots/extra/crc_risk_and_b_minus_a_methylation.png", width=5, height=3.5)
+```
+
