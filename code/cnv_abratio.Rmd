@@ -1,0 +1,89 @@
+---
+title: "CNVs and A/B ratio"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(GenomicRanges)
+library(foreach)
+library(doParallel)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(bsseq)
+library(Matrix)
+library(reshape2)
+library(tidyverse)
+library(cowplot)
+library(readr)
+
+date()
+bin_size <- "100000"
+chrs <- paste0("chr", 1:22)
+
+scaleCols <- c("#4daf4a", "orange", "#984ea3")
+names( scaleCols ) <- c("Normal", "Adenoma", "Tumor")
+scaleCol <- scale_color_manual(values=scaleCols)
+scaleFill <- scale_fill_manual(values=scaleCols)
+comp_a_col <- "#0002aa"
+comp_b_col <- "#f7cd46"
+comp_i_col <- "#66BFE3"
+scaleCompCols <- c(comp_a_col, comp_i_col, comp_b_col)
+names( scaleCompCols ) <- c("A", "I", "B")
+scaleCompCol <- scale_color_manual(values=scaleCompCols)
+scaleCompFill <- scale_fill_manual(values=scaleCompCols)
+```
+
+
+# Tumor/Normal: Prepare a long format A/B ratio data frame
+```{r }
+rds <- paste0("../rds/ab_interactions_", bin_size, ".rds")
+df <- readRDS(rds)
+# Drop single adenoma sample
+df <- df %>% filter(type != "Adenoma")
+
+cnv <- read_csv("../tables/cnv.csv")
+b <- as.numeric(bin_size)
+ab_gr <- GRanges(seqnames=paste(df$sample, df$seqnames), IRanges(df$start, df$start+b-1))
+mcols(ab_gr) <- df %>% select(-c(seqnames, start))
+cnv_gr <- GRanges(paste(cnv$sample, cnv$chromosome), IRanges(cnv$start, cnv$end))
+
+ab_gr$cnv <- countOverlaps(ab_gr, cnv_gr)
+table(ab_gr$cnv)/length(ab_gr)
+
+```
+
+
+```{r}
+ab_gr %>% as.data.frame() %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe), type_cnv = paste(type, ifelse(cnv, "\nCNV", "\nNo CNV"))) %>%
+  group_by(type_cnv, type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE)) %>%
+  ggplot(aes(type_cnv, ab_ratio_oe, fill=type)) + geom_jitter(aes(color=type), size=2) + geom_boxplot(alpha=0.1, aes(color=type), outlier.colour = NA)  + facet_wrap(~compartment, nrow=1, scales="free_y") + theme_bw() +scaleFill + ylab("Log2 A/B Interaction Ratio (O/E)") + theme(legend.position = "none") + 
+  scaleCol + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("../plots/extra/abratio_cnv.png", width=5, height=3)
+```
+
+
+```{r}
+df2 <- ab_gr %>% as.data.frame() %>% filter(compartment %in% c("A", "B")) %>% mutate(ab_ratio_oe = log2(a_ix_mean_oe/b_ix_mean_oe)) %>%
+  group_by(type, sample, compartment) %>%
+  summarize(ab_ratio_oe=mean(ab_ratio_oe, na.rm=TRUE))
+
+cnv_samp <- cnv %>% mutate(w=end-start+1)  %>% group_by(sample) %>% summarize(w=sum(w), n=n())
+
+idx <- match(df2$sample, cnv_samp$sample)
+df2 <- data.frame(df2, cnv_samp[idx,])
+df2[is.na(df2$w), "w"] <- 0
+df2[is.na(df2$n), "n"] <- 0
+
+df2 %>% ggplot(aes(w/1e6, ab_ratio_oe, color=type))  + geom_point() + facet_wrap(~compartment) + theme_bw() + xlab("Number of CN altered base pairs (Mb)")+ scaleCol + theme_bw()
+ggsave("../plots/extra/abratio_cn_altered_basepairs.png", width=6, height=3)
+
+df2 %>% ggplot(aes(n, ab_ratio_oe, color=type))  + geom_point() + facet_wrap(~compartment) + scaleCol + theme_bw() + xlab("Number of CNVs")
+ggsave("../plots/extra/abratio_num_cnvs.png", width=6, height=3)
+
+
+```
+

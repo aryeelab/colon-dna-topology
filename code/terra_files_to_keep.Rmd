@@ -1,0 +1,32 @@
+---
+title: "Terra files to keep"
+output: html_notebook
+---
+
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+library(foreach)
+
+
+tab <- read_tsv("../terra/sample.tsv") %>% select(-c(hicpro_out_tars, split_fastq1, split_fastq2, split_fastq_pairs))
+df <- foreach(col = colnames(tab), .combine=rbind) %do% {
+  files <- unlist(str_split(tab[[col]], pattern = ","))
+  data.frame(type=col, file=files, stringsAsFactors = FALSE) 
+}
+df_sample <- df %>% filter(!is.na(file) & grepl("^gs://", file))
+
+tab <- read_tsv("../terra/sample_set_entity.tsv") 
+df <- foreach(col = colnames(tab), .combine=rbind) %do% {
+  files <- unlist(str_split(tab[[col]], pattern = ","))
+  data.frame(type=col, file=files, stringsAsFactors = FALSE) 
+}
+df_sample_set <- df %>% filter(!is.na(file) & grepl("^gs://", file))
+
+df <- rbind(df_sample, df_sample_set)
+nrow(df)
+
+df %>% select(file) %>% write_tsv("../terra/terra_files_to_keep.txt", col_names = FALSE)
+
+```
