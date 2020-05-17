@@ -35,4 +35,4 @@ gsutil du -ahs gs://fc-74ac2103-b976-4792-9857-9deb489ba149
 
 # After delete
 # 4.91 TiB
-# 
+# $140.28/month
