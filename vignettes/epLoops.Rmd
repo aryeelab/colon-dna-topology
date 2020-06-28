@@ -1,0 +1,872 @@
+---
+title: "Enhancer promoter loops in colon tissue and colon normals"
+output: html_document
+abstract: "This vignette provides the code and processed data objects to reproduce the enhancer-promoter loop analysis of the paper by Johnstone, Reyes. et al 2020."
+---
+
+
+We first load the necessary libraries to complete this vignette. 
+
+```{r, message=FALSE}
+library(diffloop)
+library(magrittr)
+library(genefilter)
+library(DESeq2)
+library(limma)
+library(fdrtool)
+library(edgeR)
+library(cowplot)
+library(gwascat)
+library(liftOver)
+```
+
+The code below loads pre-computed R objects containing the *HiChIP* counts for each sample as well as the promoter regions of each transcript in the human genome. 
+
+```{r}
+
+library(ColonDNATopology)
+
+data(loopsAll_hichipper)
+data(promoters_per_transcript)
+
+promoters <- unlist(range(promoters))
+nms <- names(promoters)
+promoters <- padGRanges(promoters, pad=1000)
+names( promoters ) <- nms
+strand( promoters ) <- "*"
+mcols(promoters)$gene <- nms
+
+enhancers <-bedToGRanges( system.file( "bed",  package="ColonDNATopology") )
+
+enhancers <- padGRanges( enhancers, pad = 1000 )
+loopsAll <- mangoCorrection( loopsAll )
+
+totLoopNumber <- sum( loopsAll@rowData$mango.FDR < 0.05 & rowSums(loopsAll@counts >= 3) >= 2 )
+
+```
+
+We detect a total of `r format(totLoopNumber, big.mark = ",")` significant loops with enough counts. How many of them are enhancer promoter loops?
+
+```{r}
+loopsEP <- ColonDNATopology:::keepEPnew( loopsAll, enhancers, promoters )
+cc <- loopsEP@counts
+colnames(cc) <- gsub(".filt.intra", "", colnames(cc))
+keep <- loopsEP@rowData$mango.FDR<0.05 & rowSums(cc >= 3) >= 2
+epLoopNum <- sum(keep)
+```
+
+The total number of enhancer-promoter loops is `r format(epLoopNum, big.mark = ",")`. We can now format the loop count matrices into **DESeqDataSet** objects for normalization of both copy numbers, library size and non-linear trends.
+
+```{r}
+loopDsd <- DESeqDataSetFromMatrix(
+    cc[keep,],
+    colData=DataFrame(condition=factor(ifelse( grepl( "N$", colnames( cc ) ), "Normal", "Tumor" ))),
+    design=~condition )
+
+data(cnvs_40K)
+
+coords <- strsplit( gsub(":-", ":", as.character( summary(loopsEP)$region[keep] )), ":|-" )
+rowRanges(loopDsd) <- GRanges(
+    sapply( coords, "[[", 1),
+    IRanges(
+        start=pmax(0, as.numeric(sapply( coords, "[[", 2 ))),
+        end=as.numeric(sapply( coords, "[[", 3)) ) )
+keep[which(keep)][as.vector(seqnames( rowRanges(loopDsd) ) %in% "chrX")] <- FALSE
+loopDsd <- loopDsd[!seqnames( rowRanges(loopDsd) ) %in% "chrX",]
+rownames(loopDsd) <- sprintf("loop%0.5d", seq_len(length(rowRanges(loopDsd))))
+loopDsd <- copyNumberNormalize( loopDsd, cnvs )
+loopDsd <- normalizeTrend( loopDsd, prevNorm=TRUE )
+##loopDsd <- estimateSizeFactors( loopDsd )
+##loopDsd <- normalizeTrend( loopDsd, prevNorm=FALSE )
+##loopDsd <- DESeq( loopDsd )
+groups <- colData( loopDsd )$condition
+
+z <- DGEList(counts = counts( loopDsd ), group = groups)
+design <- model.matrix(~groups)
+z$offset <- normalizationFactors( loopDsd )
+yy <- estimateGLMCommonDisp(z, design)
+fit <- glmQLFit(yy, design, robust = TRUE)
+qlf <- glmLRT(fit, coef = 2)
+results <- as.data.frame(topTags(qlf, n = nrow(z@.Data[[1]]),
+                                 sort.by = "none"))
+loops <- subsetLoops( loopsEP, keep )
+loops <- quickAssoc( loops )
+
+loopSummary <- summary( loops )
+
+data(summaryExprTCGA)
+data(summaryExprOurs)
+
+loopSummary$baseMean <- rowMeans( counts( loopDsd, normalized=TRUE ) )
+loopSummary$gene.tss <- strsplit( loopSummary$gene.tss, "," )
+```
+
+We detect `r sum( loopSummary$FDR < 0.5 & loopSummary$logFC > 0 )` loops that are stronger in tumors compared to normals, and `r sum( loopSummary$FDR < 0.5 & loopSummary$logFC < 0 )` that are wearker in tumors compared to normals colons.
+
+We next stratify loops according to both their mean strength and magnitud of change in tumors compared to normals.
+
+```{r}
+loopSummary <- loopSummary %>%
+    dplyr::mutate(
+               loopCat =
+                   dplyr::case_when(
+                              FDR < 0.5 & logFC > 0 & baseMean >= 10 ~ "Gained (strong)",
+                              FDR < 0.5 & logFC > 0 & baseMean < 10 ~ "Gained (weak)",
+                              FDR < 0.5 & logFC < 0 & baseMean >= 10 ~ "Lost (strong)",
+                              FDR < 0.5 & logFC < 0 & baseMean < 10 ~ "Lost (weak)",
+                              TRUE ~ "No change"
+                          ),
+               loopCat2 =
+                   dplyr::case_when(
+                              FDR < 0.5 & logFC > 0 ~ "Gained",
+                              FDR < 0.5 & logFC < 0 ~ "Lost",
+                              TRUE ~ "No change"
+                          )
+           )
+
+loopSummary$loopCat <- factor( loopSummary$loopCat,
+                              levels=rev(c("Gained (strong)", "Gained (weak)",
+                                       "No change", "Lost (weak)",
+                                       "Lost (strong)" ) ))
+levels( loopSummary$loopCat ) <- c("--", "-", "0", "+", "++")
+
+loops@rowData$loopID <- rownames(loopDsd)
+loopSummary$loopID <- rownames(loopDsd)
+
+loopSummary %>%
+    dplyr::filter( baseMean > 0, loopCat != "unchanged" ) %>%
+    dplyr::group_by( loopCat ) %>%
+    dplyr::summarize( dplyr::n() )
+kp <- rowSums(loopSummary[,grepl("N.filt.intra", colnames( loopSummary ))] > 1) > 0
+
+meanCounts <- sapply(
+    split( seq_len( ncol(loopDsd) ), ifelse( grepl( "N$", colnames( loopDsd ) ), "Normal", "Tumor" ) ),
+    function(x){
+        rowMeans( (counts(loopDsd, normalized=TRUE) + 1.5)[,x])
+    } )
+loopSummary$logFC3 <- log2(meanCounts[,"Tumor"]/meanCounts[,"Normal"])
+
+minus_log10 <- scales::trans_new("minus_log10",
+       transform=function(x){ -log10(x) },
+       inverse=function(x){ 10^{x*-1} } )
+
+library(scales)
+library(ggplot2)
+theme_set(theme_cowplot())
+```
+
+We also plot a volcano plot of the differential analysis of loop strength, which corresponds to Figure 1A. 
+ 
+```{r, fig.height=3.5, fig.width=3.5, out.width = '75%'}
+loopSummary %>%
+    dplyr::filter( baseMean > 2 ) %>%
+    dplyr::select( logFC3, PValue, FDR ) %>%
+    ggplot( aes( logFC3, PValue,
+                col=dplyr::case_when(
+                               FDR < 0.5 & logFC3 > 0 ~ "gained",
+                               FDR < 0.5 & logFC3 < 0 ~ "lost",
+                               TRUE ~ "non" ) ) ) +
+    geom_point(size=.2) + theme(legend.pos="none") +
+    scale_color_manual(
+        values = c(lost="red", gained="#32CD32", non="black") ) +
+    scale_y_continuous(trans=minus_log10,
+                       labels=trans_format('log10', math_format(10^.x)),
+                       breaks = c(0, 0.1, 0.01, 0.001, 0.0001)) +
+    labs(
+        y=expression(p*"-value"),
+        x=expression("Loop"~log[2]~"(T/N)")
+        )
+```
+
+Are there gene expression changes associated with the differential loops? The code below shows the gene expression changes of the genes for each of the loop categories defined above (based on average loop strength and magnitud of change in tumors). 
+
+```{r, fig.height=3, fig.width=4.2}
+loopSummary %>%
+    dplyr::select( gene.tss, logFC, loopCat ) %>%
+    tidyr::unnest(cols=c(gene.tss) ) %>%
+    dplyr::rename( geneID=gene.tss, loopDiff=logFC ) %>%
+    dplyr::full_join( exprTCGA, by="geneID" ) %>%
+    dplyr::select( loopDiff, geneID, cancer.means, normal.means, loopCat ) %>%
+    dplyr::mutate( log2FC=log2( cancer.means / normal.means ) )  %>%
+    na.omit() %>%
+    ggplot( aes( loopCat, log2FC, fill=loopCat ) ) +
+    geom_boxplot(outlier.shape=NA) +
+    geom_hline(yintercept=0, col="darkred") +
+    scale_fill_manual(
+        values = c(`--`="red", `++`="#32CD32", `+`="#32CD3250", `-`="#ff000050", `0`="white") ) +
+    labs(x=expression("Loop"~log[2]~"(T/N)"),
+         y=expression("Expression"~log[2]~"(T/N)")) +
+    coord_cartesian(ylim=c(-3,3)) +
+    theme(legend.pos="none")
+```
+
+The plot above shows that as the loops are stronger in tumors, genes tend to be over-expressed compared to normals, and viceversa. The code above uses TCGA gene expression. Is this behaviour recapitulated in the expression data of our cohort?
+
+```{r, fig.height=3, fig.width=4.2}
+loopSummary %>%
+    dplyr::select( gene.tss, logFC, loopCat ) %>%
+    tidyr::unnest(cols=c(gene.tss) ) %>%
+    dplyr::rename( geneID=gene.tss, loopDiff=logFC ) %>%
+    dplyr::full_join( exprOurs, by="geneID" ) %>%
+    dplyr::select( loopDiff, geneID, Tumor, Normal, loopCat ) %>%
+    dplyr::mutate( log2FC=log2( Tumor / Normal ) )  %>%
+    na.omit() %>%
+    ggplot( aes( loopCat, log2FC ) ) +
+    geom_boxplot(outlier.shape=NA) +
+    geom_hline(yintercept=0, col="darkred") +
+    labs(x=expression("Loop"~log[2]~"(T/N)"),
+         y=expression("Expression"~log[2]~"(T/N)")) +
+    coord_cartesian(ylim=c(-3,3))
+```
+
+The global behaviour is consistent. The code below produces the table S3, which also incorporates some of the CNV data. 
+
+```{r}
+coords <- strsplit( gsub(":-", ":", as.character( loopSummary$region )), ":|-" )
+
+summaryCoords <- GRanges(
+    sapply( coords, "[[", 1),
+    IRanges(
+        start=pmax(0, as.numeric(sapply( coords, "[[", 2 ))),
+        end=as.numeric(sapply( coords, "[[", 3)) ) )
+
+names( summaryCoords ) <- sprintf("loop%0.5d", seq_len(length(summaryCoords)))
+ovl <- findOverlaps( summaryCoords, cnvs )
+spOvl <- split( subjectHits(ovl), names(summaryCoords)[queryHits(ovl)] )
+
+##x <- spOvl[[1]]
+
+cnvsMat <- as.matrix(mcols(cnvs))
+
+cnvPerLoop <- vapply(spOvl, function( x ){
+    colMeans( cnvsMat[x,,drop=FALSE], na.rm=TRUE )
+}, numeric( ncol( cnvsMat ) ) )
+
+cnvPerLoop <- as.data.frame(t(cnvPerLoop))
+cnvPerLoop <- cnvPerLoop[,colnames(cnvPerLoop) %in% rownames(colData(loopDsd))]
+
+colnames(cnvPerLoop) <- paste0("cnv_", colnames(cnvPerLoop))
+
+cnvPerLoop$loopID <- rownames( cnvPerLoop )
+loopSummary$loopID <- rownames( cnvPerLoop )
+
+consistentFC <-
+    loopSummary %>%
+    dplyr::filter( baseMean > 0, loopCat != "unchanged" ) %>%
+    dplyr::select( loopID, chr_1, start_1, end_1, chr_2, start_2, end_2,
+                  baseMean, logFC, FDR, loopCat2, gene.tss ) %>%
+    dplyr::rename( geneID = gene.tss, loopFC=logFC, loopFDR=FDR, loopCat=loopCat2 ) %>%
+    tidyr::unnest(cols = c(geneID)) %>%
+    dplyr::full_join( exprTCGA, by="geneID" ) %>%
+    dplyr::select( loopID, chr_1, start_1, end_1, chr_2, start_2,
+                  end_2, baseMean.x, loopFC, loopFDR, loopCat, geneID,
+                  cancer.means, normal.means, padj.de, lfc.de ) %>%
+    dplyr::rename( baseMean = baseMean.x ) %>%
+    dplyr::mutate( log2FC=log2( cancer.means / normal.means ) ) %>%
+    dplyr::rename( cancerExpr=cancer.means, normalExpr=normal.means,
+                  exprFDR=padj.de, exprFC=lfc.de ) %>%
+    dplyr::select( -log2FC ) %>%
+    dplyr::filter( loopFDR < 0.5, exprFDR < 0.01 ) %>%
+    dplyr::filter( (grepl("Gained", loopCat) & exprFC > 0)| (grepl("Lost", loopCat) & exprFC < 0) ) %>%
+    dplyr::arrange( desc( abs( exprFC ) ) )
+
+consistentFC <- dplyr::left_join( consistentFC, cnvPerLoop, by="loopID" )
+
+
+lpID <- consistentFC[consistentFC$geneID %in% "EPHA2",]
+reshape2::melt( counts( loopDsd, normalized=TRUE )[rownames( loopDsd ) %in% lpID,] )
+
+lpID <- consistentFC[consistentFC$geneID %in% "PDCD4",]
+reshape2::melt( counts( loopDsd, normalized=TRUE )[rownames( loopDsd ) %in% lpID,] )
+
+##write.table(
+##    consistentFC, quote=FALSE, col.names=TRUE,
+##    row.names=FALSE, sep="\t",
+##    file="epLoops_tumor_normal.txt" )
+
+tabS <- dplyr::select( consistentFC[consistentFC$baseMean > 5,],
+                      loopID, chr_1, start_1, end_1, chr_2,
+                      start_2, end_2, loopFC, geneID, exprFC )
+
+cnts <- counts( loopDsd, normalized=TRUE )[unique(tabS$loopID),]
+cnts <- as.data.frame( cnts )
+colnames( cnts ) <- paste0("normCounts_", colnames(cnts))
+cnts$loopID <- rownames( cnts )
+tabS <- dplyr::full_join( tabS, cnts )
+colnames(cnvPerLoop) <- gsub("cnv", "CN", colnames(cnvPerLoop))
+tabS <- dplyr::left_join( tabS, cnvPerLoop, by="loopID" )
+all( cnvPerLoop$loopID == loopSummary$loopID )
+##write.csv( tabS, quote=FALSE, row.names=FALSE, file="../output/tables/tabS_diffloops.csv" )
+
+```
+
+How would the gene expression plot above loop if we only keep CNV-stable regions?
+
+```{r, fig.height=3, fig.width=4.2}
+
+keep <- rowSums( cnvPerLoop[,grepl( "CN", colnames( cnvPerLoop ) )] > 0.8 & cnvPerLoop[,grepl( "CN", colnames( cnvPerLoop ) )] < 1.1 ) == 7
+loopSummary %>%
+    dplyr::filter( keep ) %>%
+    dplyr::select( gene.tss, logFC, loopCat ) %>%
+    tidyr::unnest(cols=c("gene.tss")) %>%
+    dplyr::rename( geneID=gene.tss, loopDiff=logFC ) %>%
+    dplyr::full_join( exprTCGA, by="geneID" ) %>%
+    dplyr::select( loopDiff, geneID, cancer.means, normal.means, loopCat ) %>%
+    dplyr::mutate( log2FC=log2( cancer.means / normal.means ) )  %>%
+    na.omit() %>%
+    ggplot( aes( loopCat, log2FC ) ) +
+    geom_boxplot(outlier.shape=NA) +
+    geom_hline(yintercept=0, col="darkred") +
+    labs(x=expression("Loop"~log[2]~"(T/N)"),
+         y=expression("RNA"~log[2]~"(T/N)")) +
+    coord_cartesian(ylim=c(-3,3))
+
+```
+
+```{r}
+
+###########################################
+## Are promoters enriched among CRC SNPs ##
+###########################################
+
+data("crcSNPs")
+data("promoters_per_transcript")
+
+promoters <- reduce( unlist( promoters ), ignore.strand=TRUE )
+promoters <- keepStandardChromosomes( promoters, pruning.mode="coarse" )
+
+enhancersWSNP <- subsetByOverlaps( enhancers, crcSNPs )
+ovr <- findOverlaps( enhancersWSNP, crcSNPs )
+mcols( enhancersWSNP )$rsIDs <- split( names(crcSNPs)[subjectHits( ovr )], queryHits( ovr ) )
+
+loopsSub <- loops
+sumLoops <- summary( loopsSub )
+
+left <- unique(subsetByOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), crcSNPs ))
+right <- unique(subsetByOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), crcSNPs ))
+candAnchors <- unique(c( left, right ))
+
+ovr <- findOverlaps( candAnchors, crcSNPs )
+mcols( candAnchors )$rsIDs <- split( names(crcSNPs)[subjectHits( ovr )], queryHits( ovr ) )
+
+library(ggpubr)
+library(ensembldb)
+library(ggbio)
+library(Rsamtools)
+library(GenomicAlignments)
+
+data("tcgaExpressionCR_hg19")
+eDat <- rowRanges( tcgaExpressionCR_hg19 )
+
+geneRange <- unlist( range( eDat ) )
+
+### COLCA Loci
+i <- 10
+##chr11 111168244-111172353      * | rs3802842
+enh <- candAnchors[i]
+ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), enh )
+ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), enh )
+ovr <- c( queryHits(ovr1), queryHits(ovr2) )
+x <- sumLoops[ovr,]
+spReg <- strsplit( as.character( x$region ), ":|-" )
+spReg <- GRanges( sapply( spReg, "[[", 1 ),
+                 IRanges( as.numeric( sapply( spReg, "[[", 2 ) ), as.numeric( sapply( spReg, "[[", 3 ) ) ) )
+spReg <- range( spReg )
+gns <- unique(unlist(strsplit( x$gene.tss, "," )))
+plotGR <-
+    range( c( resize( enh, width=width(enh)+1000, fix="center" ),
+             resize( geneRange[gns], width( geneRange[gns] ) + 2000, fix="center" ),
+             spReg
+             ),
+          ignore.strand=TRUE )
+start(plotGR) <- 111152500
+end( plotGR ) <- 111180000
+rmtheme <- theme(legend.pos="none",
+                 axis.text.x=element_blank(),
+                 axis.title.x=element_blank(),
+                 plot.margin = margin(0, 0, .1, 0, "cm"))
+chr <- unique( as.character(x$chr_1) )
+lop <-
+    GRanges(chr,     
+            IRanges(
+                start(resize( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ), 1, fix="center" )),
+                start( resize( GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ), 1, fix="center" ) ) ) )
+lop <- subsetByOverlaps( lop, plotGR )
+enhInAnch <- subsetByOverlaps( enhancers, enh )
+plotGR <- keepStandardChromosomes( plotGR )
+
+
+ac <- plotCovProfileForSample( sampleName=c("BRD3162","BRD3179N"),
+                              protein="K27Ac", plotGR,
+                              sampleGroups=c("Tumor", "Normal"), itersmooth=1,
+                              meanSmooth=TRUE, lwd=1 ) +
+    rmtheme +
+    scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+
+ap <- plotLoopsFromRanges( lop, plot_gr=plotGR ) +
+    geom_rect( data = as.data.frame( enhInAnch ),
+              inherit.aes=FALSE,
+              aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
+              fill="#cc4c02", alpha=0.35 ) +
+    geom_vline( xintercept=start( subsetByOverlaps(unlist(crcSNPs), enh) ), colour="#377eb8", size=0.5) +
+    theme( axis.line.y=element_blank(), axis.ticks.y=element_blank() )
+bp <- plotGenesFromGRangesList( eDat, plotGR )
+abp <- ggarrange( ap + rmtheme,
+                 ac,
+                 bp + theme(legend.pos="none") +
+                 scale_x_continuous(labels=function(x){round(x/1000000, 2)}) +
+                 xlab("Genome (Mb)"), nrow=3, align="v", heights=c( 0.3, 0.4, 1 ) )
+
+pdf("../output/plots/candSNP_colca.pdf", #res=300, unit="in",
+    height=3, width=3.5)
+print(abp)
+dev.off()
+
+i <- 19
+## chr3 169486553-169493266      * | rs10936599
+enh <- candAnchors[i]
+ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), enh )
+ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), enh )
+ovr <- c( queryHits(ovr1), queryHits(ovr2) )
+x <- sumLoops[ovr,]
+spReg <- strsplit( as.character( x$region ), ":|-" )
+spReg <- GRanges( sapply( spReg, "[[", 1 ),
+                 IRanges( as.numeric( sapply( spReg, "[[", 2 ) ), as.numeric( sapply( spReg, "[[", 3 ) ) ) )
+spReg <- range( spReg )
+gns <- unique(unlist(strsplit( x$gene.tss, "," )))
+plotGR <-
+    range( c( resize( enh, width=width(enh)+1000, fix="center" ),
+             resize( geneRange[gns], width( geneRange[gns] ) + 2000, fix="center" ),
+             spReg
+             ),
+          ignore.strand=TRUE )
+start(plotGR) <- 169480500
+end( plotGR ) <- 169508000
+rmtheme <- theme(legend.pos="none",
+                 axis.text.x=element_blank(),
+                 axis.title.x=element_blank(),
+                 plot.margin = margin(0, 0, .1, 0, "cm"))
+chr <- unique( as.character(x$chr_1) )
+lop <-
+    GRanges(chr,     
+            IRanges(
+                start(resize( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ), 1, fix="center" )),
+                start( resize( GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ), 1, fix="center" ) ) ) )
+lop <- subsetByOverlaps( lop, plotGR )
+enhInAnch <- subsetByOverlaps( enhancers, enh )
+enhInAnch <- resize( enhInAnch, round(width(enhInAnch) * 1.2), fix="center")
+if( length( enhInAnch ) == 0 ){ next }
+plotGR <- keepStandardChromosomes( plotGR )
+### plot loops from the middle of the K27Ac peaks instead of middle of the anchor ##
+enhancersHere <- resize( subsetByOverlaps( enhancers, plotGR ), 1, fix="center" )
+lop <- GRanges(chr, IRanges( start( enhancersHere[1] ), end( enhancersHere[3]) ) )
+ac <- plotCovProfileForSample( sampleName=c("BRD3162","BRD3179N"),
+                              protein="K27Ac", plotGR,
+                              sampleGroups=c("Tumor", "Normal"), itersmooth=1,
+                              meanSmooth=TRUE, lwd=1 ) +
+    rmtheme +
+    scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+ap <- plotLoopsFromRanges( lop, plot_gr=plotGR ) +
+     ## geom_rect( data = as.data.frame( enh ), inherit.aes=FALSE,
+     ##           aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
+    ##           fill="gray", alpha=0.35 ) +
+    geom_rect( data = as.data.frame( enhInAnch[2] ),
+              inherit.aes=FALSE,
+              aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
+              fill="#cc4c02", alpha=0.35 ) +
+    geom_vline( xintercept=start( subsetByOverlaps(unlist(crcSNPs), enh) ), colour="#377eb8", size=0.5) +
+    theme( axis.line.y=element_blank(), axis.ticks.y=element_blank() )
+bp <- plotGenesFromGRangesList( eDat, plotGR, gpSelf=FALSE )
+abp <- ggarrange( ap + rmtheme,
+                 ac,
+                 bp + theme(legend.pos="none") +
+                 scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
+                 xlab("Genome (Mb)"), nrow=3, align="v", heights=c( 0.3, 0.4, 1 ) )
+pdf("../output/plots/candSNP_terc.pdf", #res=300, unit="in",
+    height=3, width=3.5)
+print(abp)
+dev.off()
+
+i <- 18
+## chr3 169486553-169493266      * | rs10936599
+enh <- candAnchors[i]
+ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), enh )
+ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), enh )
+ovr <- c( queryHits(ovr1), queryHits(ovr2) )
+x <- sumLoops[ovr,]
+spReg <- strsplit( as.character( x$region ), ":|-" )
+spReg <- GRanges( sapply( spReg, "[[", 1 ),
+                 IRanges( as.numeric( sapply( spReg, "[[", 2 ) ), as.numeric( sapply( spReg, "[[", 3 ) ) ) )
+spReg <- range( spReg )
+gns <- unique(unlist(strsplit( x$gene.tss, "," )))
+plotGR <-
+    range( c( resize( enh, width=width(enh)+1000, fix="center" ),
+             resize( geneRange[gns], width( geneRange[gns] ) + 2000, fix="center" ),
+             spReg
+             ),
+          ignore.strand=TRUE )
+start(plotGR) <- 136860000
+end( plotGR ) <- 137005000
+rmtheme <- theme(legend.pos="none",
+                 axis.text.x=element_blank(),
+                 axis.title.x=element_blank(),
+                 plot.margin = margin(0, 0, .1, 0, "cm"))
+chr <- unique( as.character(x$chr_1) )
+lop <-
+    GRanges(chr,     
+            IRanges(
+                start(resize( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ), 1, fix="center" )),
+                start( resize( GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ), 1, fix="center" ) ) ) )
+lop <- subsetByOverlaps( lop, plotGR )
+enhInAnch <- subsetByOverlaps( enhancers, enh )
+enhInAnch <- resize( enhInAnch, round(width(enhInAnch) * 1.2), fix="center")
+if( length( enhInAnch ) == 0 ){ next }
+plotGR <- keepStandardChromosomes( plotGR )
+ac <- plotCovProfileForSample( sampleName=c("BRD3162" ),
+                              protein="K27Ac", plotGR,
+                              sampleGroups=c("Tumor"), itersmooth=1,
+                              meanSmooth=TRUE, lwd=1 ) +
+    rmtheme +
+    scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+ap <- plotLoopsFromRanges( lop, plot_gr=plotGR ) +
+      ## geom_rect( data = as.data.frame( enh ), inherit.aes=FALSE,
+      ##           aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
+      ##          fill="#cc4c02", alpha=0.35 ) +
+    geom_rect( data = as.data.frame( enhInAnch ),
+              inherit.aes=FALSE,
+              aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
+              fill="#cc4c02", alpha=0.35 ) +
+    geom_vline( xintercept=start( subsetByOverlaps(unlist(crcSNPs), enh) ), colour="#377eb8", size=0.5) +
+    theme( axis.line.y=element_blank(), axis.ticks.y=element_blank() )
+bp <- plotGenesFromGRangesList( eDat, plotGR, gpSelf=FALSE )
+abp <- ggarrange( ap + rmtheme,
+                 ac,
+                 bp + theme(legend.pos="none") +
+                 scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
+                 xlab("Genome (Mb)"), nrow=3, align="v", heights=c( 0.3, 0.4, 1 ) )
+pdf("../output/plots/candSNP_cxcr4.pdf", #res=300, unit="in",
+    height=3, width=3.5)
+print(abp)
+dev.off()
+
+plotGR <- range( eDat[["EPHA2"]] )
+ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), plotGR )
+ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), plotGR )
+ovr <- unique(c( queryHits(ovr1), queryHits(ovr2) ))
+x <- sumLoops[ovr,]
+spReg <- strsplit( as.character( x$region ), ":|-" )
+spReg <- GRanges( sapply( spReg, "[[", 1 ),
+                 IRanges( as.numeric( sapply( spReg, "[[", 2 ) ), as.numeric( sapply( spReg, "[[", 3 ) ) ) )
+spReg <- range( spReg )
+gns <- unique(unlist(strsplit( x$gene.tss, "," )))
+
+plotGR <-
+    range( c( plotGR,
+             resize( geneRange[gns], width( geneRange[gns] ) + 2000, fix="center" ),
+             spReg
+             ),
+          ignore.strand=TRUE )
+start(plotGR) <- 16405000
+end(plotGR) <-   16522000
+
+rmtheme <- theme(legend.pos="none",
+                 axis.text.x=element_blank(),
+                 axis.title.x=element_blank(),
+                 plot.margin = margin(0, 0, .1, 0, "cm"))
+chr <- unique( as.character(x$chr_1) )
+keep <- rowMeans( counts( loopDsd, normalized=TRUE )[x$loopID,] ) > 5
+x <- x[keep,]
+
+png("../output/plots/jitter_loopCounts_EPHA2.png", width=2.4, height=2.4, unit="in", res=300)
+as.data.frame( counts(loopDsd, normalized=TRUE)[rownames(loopDsd) %in% x$loopID,] ) %>%
+    tibble::rownames_to_column(var="loopID") %>%
+    reshape2::melt() %>%
+    dplyr::filter( loopID %in% "loop00221" ) %>%
+    dplyr::mutate( sampType=ifelse( grepl("N$", variable ), "Normal", "Tumor" ) ) %>%
+    ggplot( aes( sampType, log2(value+1), col=sampType ) ) +
+    geom_point(alpha=0.8, size=0.8) +
+    scale_color_manual(values=c(`Normal`="#4daf4a", `Tumor`="#984ea3")) +
+    theme( legend.pos="none" ) +
+    labs( y="EPHA2 loop\n(normalized counts)", x="" )
+dev.off()
+
+anchors <- c( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ), GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ) )
+lop <-
+    GRanges(chr,     
+            IRanges(
+                start(resize( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ), 1, fix="center" )),
+                start( resize( GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ), 1, fix="center" ) ) ) )
+lop <- subsetByOverlaps( lop, plotGR )
+
+k27Peaks <- readRDS("/data/aryee/bernstein/chip/SummarizedData/gcapc/peaks/mergeLibPeaks_K27Ac.rds")
+k27Peaks <- k27Peaks[seqnames( k27Peaks ) != "chrY",]
+k27Counts <- readRDS("../output/rds/allK27AcCounts.rds")
+names( k27Peaks ) <- rownames( k27Counts )
+
+ovl1 <- findOverlaps( k27Peaks, GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ) )
+ovl1 <- split( k27Counts[queryHits( ovl1 ),"BRD3162-K27Ac"], subjectHits( ovl1 ) )
+ovl2 <- findOverlaps( k27Peaks, GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ) )
+ovl2 <- split( k27Counts[queryHits( ovl2 ),"BRD3162-K27Ac"], subjectHits( ovl2 ) )
+lop <- GRanges(
+    x$chr_1,
+    IRanges( 
+        start( resize( k27Peaks[vapply( ovl1, function(x){ names(x)[which.max(x)] }, character(1)),], 1, fix="center" ) ),
+        start( resize( k27Peaks[vapply( ovl2, function(x){ names(x)[which.max(x)] }, character(1)),], 1, fix="center" ) ) ) )
+
+
+### chose highest peak ###
+
+plotGR <- keepStandardChromosomes( plotGR )
+ac <- plotCovProfileForSample( sampleName=c("BRD3162", "BRD3179N"),
+                              protein="K27Ac", plotGR,
+                              sampleGroups=c("Tumor", "Normal"), itersmooth=1,
+                              meanSmooth=TRUE, lwd=1 ) +
+    rmtheme +
+    scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+valuesTumors <- rowMedians( counts(loopDsd, normalized=TRUE)[x$loopID,colData( loopDsd )$condition == "Tumor",drop=FALSE] )
+valuesNormal <- rowMedians( counts(loopDsd, normalized=TRUE)[x$loopID,colData( loopDsd )$condition == "Normal",drop=FALSE] )
+maxVal <- max(c(valuesTumors, valuesNormal))
+minVal <- min(c(valuesTumors, valuesNormal))
+aTumor <- plotLoopsFromRanges( lop, plot_gr=plotGR, rangeSize=c(0, 1),
+                              valueVars=valuesTumors, widthLims=c(2, maxVal), sd=40 )
+aNormal <- plotLoopsFromRanges( lop, plot_gr=plotGR, rangeSize=c(0, 1),
+                               valueVars=valuesNormal, widthLims=c(2, maxVal), sd=40 )
+bp <- plotGenesFromGRangesList( eDat, plotGR, gpSelf=FALSE )
+abp <- ggarrange(
+    aNormal +
+    rmtheme +
+    ylab("N") +
+    theme( axis.ticks.y=element_blank(), axis.line.y=element_blank(),
+          axis.title.y=element_text(angle=0, colour="#4daf4a") ),
+    aTumor +
+    rmtheme + 
+    ylab("T") +
+    theme( axis.ticks.y=element_blank(), axis.line.y=element_blank(),
+          axis.title.y=element_text(angle=0, colour="#984ea3") ),
+    ac,
+    bp + theme(legend.pos="none") +
+    scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
+    xlab("Genome (Mb)"), nrow=4, align="v", heights=c( 0.3, 0.3, 0.4, 0.6 ) )
+pdf("../output/plots/candSNP_EPHA2.pdf", #res=300, unit="in",
+    height=2.8, width=3.2)
+print(abp)
+dev.off()
+
+plotGR <- range( eDat[["PDCD4"]] )
+ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), plotGR )
+ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), plotGR )
+ovr <- unique(c( queryHits(ovr1), queryHits(ovr2) ))
+x <- sumLoops[ovr,]
+
+spReg <- strsplit( as.character( x$region ), ":|-" )
+spReg <- GRanges( sapply( spReg, "[[", 1 ),
+                 IRanges( as.numeric( sapply( spReg, "[[", 2 ) ), as.numeric( sapply( spReg, "[[", 3 ) ) ) )
+spReg <- range( spReg )
+gns <- unique(unlist(strsplit( x$gene.tss, "," )))
+plotGR <-
+    range( c( plotGR,
+             resize( geneRange[gns], width( geneRange[gns] ) + 2000, fix="center" ),
+             spReg
+             ),
+          ignore.strand=TRUE )
+start(plotGR) <- 112560000
+end(plotGR) <- 112658000
+rmtheme <- theme(legend.pos="none",
+                 axis.text.x=element_blank(),
+                 axis.title.x=element_blank(),
+                 plot.margin = margin(0, 0, .1, 0, "cm"))
+chr <- unique( as.character(x$chr_1) )
+keep <- rowMeans( counts( loopDsd, normalized=TRUE )[x$loopID,] ) > 3
+x <- x[keep,]
+
+png("../output/plots/jitter_loopCounts_PDCD4.png", width=2.4, height=2.4, unit="in", res=300)
+as.data.frame( counts(loopDsd, normalized=TRUE)[rownames(loopDsd) %in% x$loopID,] ) %>%
+    tibble::rownames_to_column(var="loopID") %>%
+    reshape2::melt() %>%
+    dplyr::filter( loopID %in% "loop06256" ) %>%
+    dplyr::mutate( sampType=ifelse( grepl("N$", variable ), "Normal", "Tumor" ) ) %>%
+    ggplot( aes( sampType, log2(value), col=sampType ) ) +
+    geom_point(alpha=0.8, size=0.8) +
+    scale_color_manual(values=c(`Normal`="#4daf4a", `Tumor`="#984ea3")) +
+    theme( legend.pos="none" ) +
+    labs( y="PDCD4 loop \n(normalized counts)", x="" )
+dev.off()
+
+
+anchors <- c( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ),
+             GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ) )
+
+lop <-
+    GRanges(chr,     
+            IRanges(
+                start(resize( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ), 1, fix="center" )),
+                start( resize( GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ), 1, fix="center" ) ) ) )
+
+ovl1 <- findOverlaps( k27Peaks, GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ) )
+ovl1 <- split( k27Counts[queryHits( ovl1 ),"BRD3162-K27Ac"], subjectHits( ovl1 ) )
+ovl2 <- findOverlaps( k27Peaks, GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ) )
+ovl2 <- split( k27Counts[queryHits( ovl2 ),"BRD3162-K27Ac"], subjectHits( ovl2 ) )
+lop <- GRanges(
+    x$chr_1,
+    IRanges( 
+        start( resize( k27Peaks[vapply( ovl1, function(x){ names(x)[which.max(x)] }, character(1)),], 1, fix="center" ) ),
+        start( resize( k27Peaks[vapply( ovl2, function(x){ names(x)[which.max(x)] }, character(1)),], 1, fix="center" ) ) ) )
+
+lop <- subsetByOverlaps( lop, plotGR )
+plotGR <- keepStandardChromosomes( plotGR )
+ac <- plotCovProfileForSample( sampleName=c("BRD3162", "BRD3179N"),
+                              protein="K27Ac", plotGR,
+                              sampleGroups=c("Tumor", "Normal"), itersmooth=1,
+                              meanSmooth=TRUE, lwd=1 ) +
+    rmtheme +
+    scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+valuesTumors <- rowMedians( counts(loopDsd, normalized=TRUE)[x$loopID,colData( loopDsd )$condition == "Tumor",drop=FALSE] )
+valuesNormal <- rowMedians( counts(loopDsd, normalized=TRUE)[x$loopID,colData( loopDsd )$condition == "Normal",drop=FALSE] )
+maxVal <- max(c(valuesTumors, valuesNormal))
+minVal <- min(c(valuesTumors, valuesNormal))
+aTumor <- plotLoopsFromRanges( lop, plot_gr=plotGR, rangeSize=c(0, 1),
+                              valueVars=valuesTumors, widthLims=c(2, maxVal), sd=40 )
+aNormal <- plotLoopsFromRanges( lop, plot_gr=plotGR, rangeSize=c(0, 1),
+                               valueVars=valuesNormal, widthLims=c(2, maxVal), sd=40 )
+bp <- plotGenesFromGRangesList( eDat, plotGR, gpSelf=FALSE )
+abp <- ggarrange(
+    aNormal +
+    rmtheme +
+    ylab("N") +
+    theme( axis.ticks.y=element_blank(), axis.line.y=element_blank(),
+          axis.title.y=element_text(angle=0, colour="#4daf4a") ),
+    aTumor +
+    rmtheme + 
+    ylab("T") +
+    theme( axis.ticks.y=element_blank(), axis.line.y=element_blank(),
+          axis.title.y=element_text(angle=0, colour="#984ea3") ),
+    ac,
+    bp + theme(legend.pos="none") +
+    scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
+    xlab("Genome (Mb)"), nrow=4, align="v", heights=c( 0.3, 0.3, 0.4, 0.6 ) )
+pdf("../output/plots/candSNP_PDCD4.pdf", #res=300, unit="in",
+    height=2.8, width=3.2)
+print(abp)
+dev.off()
+plotGR
+
+
+promoters <- readRDS("/data/aryee/areyes/cimp_hichip/data/chipseq/promoters.rds")
+promoters <- resize( promoters, 1500, fix="center")
+
+x <- 1
+
+candDF <- lapply( seq_along( candAnchors ), function(x){
+    enh <- candAnchors[x]
+    ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), enh )
+    ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), enh )
+    sumSub <- sumLoops[queryHits(ovr1),]
+    ovr3 <- findOverlaps( GRanges( sumSub$chr_2, IRanges( sumSub$start_2, sumSub$end_2 ) ), promoters )
+    distalGenes1 <- names(promoters)[subjectHits(ovr3)]
+    loopID1 <- sumSub$loopID[queryHits( ovr3 )]
+    ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), enh )
+    sumSub <- sumLoops[queryHits(ovr2),]
+    ovr3 <- findOverlaps( GRanges( sumSub$chr_1, IRanges( sumSub$start_1, sumSub$end_1 ) ), promoters )
+    distalGenes2 <- names(promoters)[subjectHits(ovr3)]
+    loopID2 <- sumSub$loopID[queryHits(ovr3)]
+    distalGenes <- c( distalGenes1, distalGenes2 )
+    loopIDs <- c( loopID1, loopID2 )
+    numPeaks <- length( subsetByOverlaps( enhancers, enh ) )
+    snpInPeak <- length( subsetByOverlaps( subsetByOverlaps( enhancers, enh ), crcSNPs ) )
+    data.frame(
+        K27Peaks=numPeaks,
+        rsID=paste( unlist( enh$rsIDs ), collapse="," ),
+        snpInPeak=numPeaks,
+        distalGenes=distalGenes,
+        loopID=loopIDs)
+} )
+
+candDF <- do.call(rbind, candDF)
+
+##write.table( candDF, quote=FALSE, sep="\t", file="../output/GWAS_distalGenes.txt" )
+
+## candDF$distalGenes <- strsplit( as.character( candDF$distalGenes ), "," )
+## candDF <- tidyr::unnest( candDF )
+
+candDF$rsID <- strsplit( as.character( candDF$rsID ), "," )
+candDF <- tidyr::unnest( candDF )
+
+crcSNPs <- unlist( crcSNPs, use.names=FALSE )
+
+promoters <- unlist( promoters )
+mcols(promoters)$geneID <- sapply( strsplit( names(promoters), "\\." ), "[[", 1 )
+
+distToNear <- distanceToNearest( crcSNPs[candDF$rsID,], promoters )
+
+candDF$nearestGene <- mcols(promoters)$geneID[subjectHits( distToNear )]
+
+candDF <- dplyr::left_join( candDF, sumLoops[,c("chr_1", "start_1", "end_1", "chr_2", "start_2", "end_2", "loopID" )], by="loopID")
+candDF$K27Peaks <- NULL
+candDF$snpInPeak <- NULL
+
+snpsWDistal <- unique(candDF$rsID[!candDF$distalGenes == candDF$nearestGene])
+snpsWClose <- unique(candDF$rsID[candDF$distalGenes == candDF$nearestGene])
+
+
+length( snpsWDistal[snpsWDistal %in% snpsWClose] )/length(unique(candDF$rsID))
+length( snpsWDistal[snpsWDistal %in% snpsWClose] )
+
+length(snpsWDistal)/length(unique(candDF$rsID))
+
+colnames( candDF )[1] <- "Putative target gene"
+colnames( candDF )[4] <- "Nearest gene"
+
+candDF <- candDF[,c("rsID", "Nearest gene", "Putative target gene", "loopID", "chr_1", "start_1", "end_1", "chr_2", "start_2", "end_2")]
+
+write.csv( candDF, quote=FALSE, row.names=FALSE, file="../output/tables/supS_snpLoops.csv" )
+
+
+candDF$distalGenes <- strsplit( as.character(candDF$distalGenes), "," )
+promoters["TERC"]
+library(org.Hs.eg.db)
+
+for( i in seq_len( nrow( candDF ) ) ){
+    distGenes <- candDF$distalGenes[[i]]
+    candDF$distalGenesEns[[i]] <- select( org.Hs.eg.db,
+                                         keys=distGenes,
+                                         columns=c("ENSEMBL"), keytype="SYMBOL" )$ENSEMBL
+}
+x <- which(grepl("COLCA1", candDF$distalGenes))
+candDF$distalGenesEns[[x]] <- "ENSG00000196167"
+
+crcSNPs <- unlist( crcSNPs )
+
+qtlDat <-
+    rbind(
+        read.delim("/data/aryee/areyes/GB/GTExData/GTEx_Analysis_v7_eQTL/Colon_Sigmoid.v7.signif_variant_gene_pairs.txt",
+                   header=TRUE),
+        read.delim("/data/aryee/areyes/GB/GTExData/GTEx_Analysis_v7_eQTL/Colon_Transverse.v7.signif_variant_gene_pairs.txt",
+                   header=TRUE) )[,c("variant_id", "gene_id", "slope")]
+
+candDFLong <- tidyr::unnest( candDF[,c("rsID", "distalGenesEns")] )
+crcSNPs <- unlist(crcSNPs)
+mcols(crcSNPs)$variant_id <- sprintf("%s_%d_%s", gsub("chr", "", as.character( seqnames( crcSNPs ) ) ), start(crcSNPs), mcols(crcSNPs)$contigAllele )
+qtlDat$variant_id2 <- gsub( "(.*)_\\S+_b37$", "\\1", as.character( qtlDat$variant_id ) )
+qtlDat$gene_id2 <- gsub("\\.\\S$", "", qtlDat$gene_id)
+candDFLong <- candDFLong[as.character( candDFLong$rsID ) %in% names(crcSNPs),]
+candDFLong <- dplyr::left_join( candDFLong, as.data.frame( mcols(crcSNPs)[,c("rsID", "variant_id")] ))
+candDFLong$isQTL <- NA
+
+for( i in seq_len( nrow( candDFLong ) ) ){
+    candDFLong$isQTL[i] <- sum( qtlDat$gene_id2 %in% candDFLong$distalGenesEns[i] & qtlDat$variant_id2 %in% candDFLong$variant_id[i] )
+}
+
+candDFLong[candDFLong$isQTL > 0,]
+
+unlist( candDF$distalGenesEns )
+lengths(candDF$distalGenes)
+
+candDFLong <- tidyr::unnest(candDF)
+candDFLong <- dplyr::rename( candDFLong, geneID=distalGenes )
+candDFLong <- dplyr::left_join( candDFLong, dplyr::select(exprTCGA, geneID, pvalue.de, padj.de, lfc.de ) )
+
+png("pruena.png")
+boxplot( candDFLong$lfc.de, xlab="log fold change(tumor/normal)")
+dev.off()
+
+```
