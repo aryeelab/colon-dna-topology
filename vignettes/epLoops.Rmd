@@ -36,7 +36,7 @@ names( promoters ) <- nms
 strand( promoters ) <- "*"
 mcols(promoters)$gene <- nms
 
-enhancers <-bedToGRanges( system.file( "bed",  package="ColonDNATopology") )
+enhancers <-bedToGRanges( system.file( "extdata/bed/union_K27Ac_peaks.bed",  package="ColonDNATopology") )
 
 enhancers <- padGRanges( enhancers, pad = 1000 )
 loopsAll <- mangoCorrection( loopsAll )
@@ -359,7 +359,9 @@ data("tcgaExpressionCR_hg19")
 eDat <- rowRanges( tcgaExpressionCR_hg19 )
 
 geneRange <- unlist( range( eDat ) )
+```
 
+```{r, fig.height=4.5, fig.width=5}
 ### COLCA Loci
 i <- 10
 ##chr11 111168244-111172353      * | rs3802842
@@ -395,13 +397,22 @@ lop <- subsetByOverlaps( lop, plotGR )
 enhInAnch <- subsetByOverlaps( enhancers, enh )
 plotGR <- keepStandardChromosomes( plotGR )
 
+plot_gr <- plotGR
+bamPaths <- system.file("inst/extdata/geodata", package="ColonDNATopology")
+suffix <- ".bw"
+sampleName <- c("BRD3162","BRD3179N")
+protein="K27Ac"
+samples <- file.path( bamPaths,
+                      paste0( paste( sampleName, protein, sep="-"), suffix ) )
+stopifnot(file.exists( samples ))
 
-ac <- plotCovProfileForSample( sampleName=c("BRD3162","BRD3179N"),
-                              protein="K27Ac", plotGR,
-                              sampleGroups=c("Tumor", "Normal"), itersmooth=1,
-                              meanSmooth=TRUE, lwd=1 ) +
-    rmtheme +
-    scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+ac <- plotCovProfileForSample( 
+  sampleName=c("BRD3162","BRD3179N"),
+  protein="K27Ac", plotGR,
+  sampleGroups=c("Tumor", "Normal"), itersmooth=1,
+  meanSmooth=TRUE, lwd=1 ) +
+  rmtheme +
+  scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
 
 ap <- plotLoopsFromRanges( lop, plot_gr=plotGR ) +
     geom_rect( data = as.data.frame( enhInAnch ),
@@ -410,13 +421,18 @@ ap <- plotLoopsFromRanges( lop, plot_gr=plotGR ) +
               fill="#cc4c02", alpha=0.35 ) +
     geom_vline( xintercept=start( subsetByOverlaps(unlist(crcSNPs), enh) ), colour="#377eb8", size=0.5) +
     theme( axis.line.y=element_blank(), axis.ticks.y=element_blank() )
+
 bp <- plotGenesFromGRangesList( eDat, plotGR )
 abp <- ggarrange( ap + rmtheme,
                  ac,
                  bp + theme(legend.pos="none") +
                  scale_x_continuous(labels=function(x){round(x/1000000, 2)}) +
                  xlab("Genome (Mb)"), nrow=3, align="v", heights=c( 0.3, 0.4, 1 ) )
+abp
+```
 
+
+```{r}
 pdf("../output/plots/candSNP_colca.pdf", #res=300, unit="in",
     height=3, width=3.5)
 print(abp)
