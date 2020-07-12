@@ -219,7 +219,12 @@ loopSummary %>%
     coord_cartesian(ylim=c(-3,3))
 ```
 
-The global behaviour is consistent. The code below produces the table S3, which also incorporates some of the CNV data. 
+
+The global trends are consistent. 
+
+## Table S3
+
+The code below produces the table S3, which also incorporates some of the CNV data. 
 
 ```{r}
 coords <- strsplit( gsub(":-", ":", as.character( loopSummary$region )), ":|-" )
@@ -296,6 +301,7 @@ tabS <- dplyr::full_join( tabS, cnts )
 colnames(cnvPerLoop) <- gsub("cnv", "CN", colnames(cnvPerLoop))
 tabS <- dplyr::left_join( tabS, cnvPerLoop, by="loopID" )
 all( cnvPerLoop$loopID == loopSummary$loopID )
+head( tabS )
 ##write.csv( tabS, quote=FALSE, row.names=FALSE, file="../output/tables/tabS_diffloops.csv" )
 
 ```
@@ -322,6 +328,9 @@ loopSummary %>%
     coord_cartesian(ylim=c(-3,3))
 
 ```
+
+
+## Overlap of enhancers with SNPs
 
 ```{r}
 
@@ -361,6 +370,8 @@ eDat <- rowRanges( tcgaExpressionCR_hg19 )
 geneRange <- unlist( range( eDat ) )
 ```
 
+The code below plots a loop that conects an enhancer element to the promoter of the *COLCA1* and *COLCA2* genes. The enhancer overlaps with a SNP that is a hit of predisposition to colorectal cancer. 
+
 ```{r, fig.height=4.5, fig.width=5}
 ### COLCA Loci
 i <- 10
@@ -398,13 +409,6 @@ enhInAnch <- subsetByOverlaps( enhancers, enh )
 plotGR <- keepStandardChromosomes( plotGR )
 
 plot_gr <- plotGR
-bamPaths <- system.file("inst/extdata/geodata", package="ColonDNATopology")
-suffix <- ".bw"
-sampleName <- c("BRD3162","BRD3179N")
-protein="K27Ac"
-samples <- file.path( bamPaths,
-                      paste0( paste( sampleName, protein, sep="-"), suffix ) )
-stopifnot(file.exists( samples ))
 
 ac <- plotCovProfileForSample( 
   sampleName=c("BRD3162","BRD3179N"),
@@ -431,16 +435,14 @@ abp <- ggarrange( ap + rmtheme,
 abp
 ```
 
+The code below plots the equivalent plot but for a different locus. These data shows an enhancer of the gene TERC that overlaps with a colorectal cancer GWAS SNP.
 
-```{r}
-pdf("../output/plots/candSNP_colca.pdf", #res=300, unit="in",
-    height=3, width=3.5)
-print(abp)
-dev.off()
+```{r, fig.height=4.5, fig.width=5}
 
 i <- 19
 ## chr3 169486553-169493266      * | rs10936599
 enh <- candAnchors[i]
+
 ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), enh )
 ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), enh )
 ovr <- c( queryHits(ovr1), queryHits(ovr2) )
@@ -476,12 +478,14 @@ plotGR <- keepStandardChromosomes( plotGR )
 ### plot loops from the middle of the K27Ac peaks instead of middle of the anchor ##
 enhancersHere <- resize( subsetByOverlaps( enhancers, plotGR ), 1, fix="center" )
 lop <- GRanges(chr, IRanges( start( enhancersHere[1] ), end( enhancersHere[3]) ) )
+
 ac <- plotCovProfileForSample( sampleName=c("BRD3162","BRD3179N"),
                               protein="K27Ac", plotGR,
                               sampleGroups=c("Tumor", "Normal"), itersmooth=1,
                               meanSmooth=TRUE, lwd=1 ) +
     rmtheme +
     scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+
 ap <- plotLoopsFromRanges( lop, plot_gr=plotGR ) +
      ## geom_rect( data = as.data.frame( enh ), inherit.aes=FALSE,
      ##           aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
@@ -498,10 +502,13 @@ abp <- ggarrange( ap + rmtheme,
                  bp + theme(legend.pos="none") +
                  scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
                  xlab("Genome (Mb)"), nrow=3, align="v", heights=c( 0.3, 0.4, 1 ) )
-pdf("../output/plots/candSNP_terc.pdf", #res=300, unit="in",
-    height=3, width=3.5)
-print(abp)
-dev.off()
+abp
+
+```
+
+Finally, the code below repeats this plot but for the CXCR4 locus. 
+
+```{r}
 
 i <- 18
 ## chr3 169486553-169493266      * | rs10936599
@@ -560,10 +567,14 @@ abp <- ggarrange( ap + rmtheme,
                  bp + theme(legend.pos="none") +
                  scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
                  xlab("Genome (Mb)"), nrow=3, align="v", heights=c( 0.3, 0.4, 1 ) )
-pdf("../output/plots/candSNP_cxcr4.pdf", #res=300, unit="in",
-    height=3, width=3.5)
-print(abp)
-dev.off()
+abp
+```
+
+## Differential loops (examples)
+
+The manuscript highlights plots of individual E-P loops that are gained or lost, which are associated to differences in gene expression patterns. The code below reproduces the plot from Figure 1, where we display a differential loop that is strongly associated to the expression of the gene *EPHA2*. The plot below shows the loop counts.
+
+```{r, fig.width=3.4, fig.height=3.4}
 
 plotGR <- range( eDat[["EPHA2"]] )
 ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), plotGR )
@@ -593,7 +604,7 @@ chr <- unique( as.character(x$chr_1) )
 keep <- rowMeans( counts( loopDsd, normalized=TRUE )[x$loopID,] ) > 5
 x <- x[keep,]
 
-png("../output/plots/jitter_loopCounts_EPHA2.png", width=2.4, height=2.4, unit="in", res=300)
+##png("../output/plots/jitter_loopCounts_EPHA2.png", width=2.4, height=2.4, unit="in", res=300)
 as.data.frame( counts(loopDsd, normalized=TRUE)[rownames(loopDsd) %in% x$loopID,] ) %>%
     tibble::rownames_to_column(var="loopID") %>%
     reshape2::melt() %>%
@@ -604,7 +615,15 @@ as.data.frame( counts(loopDsd, normalized=TRUE)[rownames(loopDsd) %in% x$loopID,
     scale_color_manual(values=c(`Normal`="#4daf4a", `Tumor`="#984ea3")) +
     theme( legend.pos="none" ) +
     labs( y="EPHA2 loop\n(normalized counts)", x="" )
-dev.off()
+##dev.off()
+
+```
+
+## *EPHA2* differential loop
+
+The code below shows the E-P loops that link enhancers to the promoter of the *EPHA2* gene.  
+
+```{r, fig.height=3.8, fig.width=4.2}
 
 anchors <- c( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ), GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ) )
 lop <-
@@ -614,9 +633,10 @@ lop <-
                 start( resize( GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ), 1, fix="center" ) ) ) )
 lop <- subsetByOverlaps( lop, plotGR )
 
-k27Peaks <- readRDS("/data/aryee/bernstein/chip/SummarizedData/gcapc/peaks/mergeLibPeaks_K27Ac.rds")
+data(k27ac_data)
+
+#k27Peaks <- readRDS("/data/aryee/bernstein/chip/SummarizedData/gcapc/peaks/mergeLibPeaks_K27Ac.rds")
 k27Peaks <- k27Peaks[seqnames( k27Peaks ) != "chrY",]
-k27Counts <- readRDS("../output/rds/allK27AcCounts.rds")
 names( k27Peaks ) <- rownames( k27Counts )
 
 ovl1 <- findOverlaps( k27Peaks, GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ) )
@@ -629,7 +649,6 @@ lop <- GRanges(
         start( resize( k27Peaks[vapply( ovl1, function(x){ names(x)[which.max(x)] }, character(1)),], 1, fix="center" ) ),
         start( resize( k27Peaks[vapply( ovl2, function(x){ names(x)[which.max(x)] }, character(1)),], 1, fix="center" ) ) ) )
 
-
 ### chose highest peak ###
 
 plotGR <- keepStandardChromosomes( plotGR )
@@ -639,6 +658,7 @@ ac <- plotCovProfileForSample( sampleName=c("BRD3162", "BRD3179N"),
                               meanSmooth=TRUE, lwd=1 ) +
     rmtheme +
     scale_color_manual( values=c( `Tumor` = "#984ea399", `Normal` = "#4daf4a99") )
+
 valuesTumors <- rowMedians( counts(loopDsd, normalized=TRUE)[x$loopID,colData( loopDsd )$condition == "Tumor",drop=FALSE] )
 valuesNormal <- rowMedians( counts(loopDsd, normalized=TRUE)[x$loopID,colData( loopDsd )$condition == "Normal",drop=FALSE] )
 maxVal <- max(c(valuesTumors, valuesNormal))
@@ -663,11 +683,16 @@ abp <- ggarrange(
     bp + theme(legend.pos="none") +
     scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
     xlab("Genome (Mb)"), nrow=4, align="v", heights=c( 0.3, 0.3, 0.4, 0.6 ) )
-pdf("../output/plots/candSNP_EPHA2.pdf", #res=300, unit="in",
-    height=2.8, width=3.2)
-print(abp)
-dev.off()
+abp
 
+
+```
+
+## *PDCD4* differential loop
+
+The plot below shows E-P loops that link enhancers to the promoter of the gene *PDCD4*. 
+
+```{r, fig.width=3.4, fig.height=3.4}
 plotGR <- range( eDat[["PDCD4"]] )
 ovr1 <- findOverlaps( GRanges( sumLoops$chr_1, IRanges( sumLoops$start_1, sumLoops$end_1 ) ), plotGR )
 ovr2 <- findOverlaps( GRanges( sumLoops$chr_2, IRanges( sumLoops$start_2, sumLoops$end_2 ) ), plotGR )
@@ -695,7 +720,7 @@ chr <- unique( as.character(x$chr_1) )
 keep <- rowMeans( counts( loopDsd, normalized=TRUE )[x$loopID,] ) > 3
 x <- x[keep,]
 
-png("../output/plots/jitter_loopCounts_PDCD4.png", width=2.4, height=2.4, unit="in", res=300)
+##png("../output/plots/jitter_loopCounts_PDCD4.png", width=2.4, height=2.4, unit="in", res=300)
 as.data.frame( counts(loopDsd, normalized=TRUE)[rownames(loopDsd) %in% x$loopID,] ) %>%
     tibble::rownames_to_column(var="loopID") %>%
     reshape2::melt() %>%
@@ -706,12 +731,13 @@ as.data.frame( counts(loopDsd, normalized=TRUE)[rownames(loopDsd) %in% x$loopID,
     scale_color_manual(values=c(`Normal`="#4daf4a", `Tumor`="#984ea3")) +
     theme( legend.pos="none" ) +
     labs( y="PDCD4 loop \n(normalized counts)", x="" )
-dev.off()
+##dev.off()
+```
 
+```{r, fig.height=3.8, fig.width=4.2}
 
 anchors <- c( GRanges( x$chr_1, IRanges( x$start_1, x$end_1 ) ),
              GRanges( x$chr_2, IRanges( x$start_2, x$end_2 ) ) )
-
 lop <-
     GRanges(chr,     
             IRanges(
@@ -760,17 +786,19 @@ abp <- ggarrange(
     bp + theme(legend.pos="none") +
     scale_x_continuous(labels=function(x){round(x/1000000, 3)}) +
     xlab("Genome (Mb)"), nrow=4, align="v", heights=c( 0.3, 0.3, 0.4, 0.6 ) )
-pdf("../output/plots/candSNP_PDCD4.pdf", #res=300, unit="in",
-    height=2.8, width=3.2)
-print(abp)
-dev.off()
-plotGR
+abp
+```
 
 
-promoters <- readRDS("/data/aryee/areyes/cimp_hichip/data/chipseq/promoters.rds")
+## Table supplementary S4
+
+```{r}
+
+data(promoters_per_transcript)
+
+promoters
+#promoters2 <- readRDS("/data/aryee/areyes/cimp_hichip/data/chipseq/promoters.rds")
 promoters <- resize( promoters, 1500, fix="center")
-
-x <- 1
 
 candDF <- lapply( seq_along( candAnchors ), function(x){
     enh <- candAnchors[x]
@@ -799,19 +827,15 @@ candDF <- lapply( seq_along( candAnchors ), function(x){
 
 candDF <- do.call(rbind, candDF)
 
-##write.table( candDF, quote=FALSE, sep="\t", file="../output/GWAS_distalGenes.txt" )
-
-## candDF$distalGenes <- strsplit( as.character( candDF$distalGenes ), "," )
-## candDF <- tidyr::unnest( candDF )
 
 candDF$rsID <- strsplit( as.character( candDF$rsID ), "," )
-candDF <- tidyr::unnest( candDF )
+candDF <- tidyr::unnest( candDF, cols=c(rsID))
 
-crcSNPs <- unlist( crcSNPs, use.names=FALSE )
+##crcSNPs <- unlist( crcSNPs, use.names=FALSE )
 
 promoters <- unlist( promoters )
 mcols(promoters)$geneID <- sapply( strsplit( names(promoters), "\\." ), "[[", 1 )
-
+names(crcSNPs) <- mcols(crcSNPs)$rsID
 distToNear <- distanceToNearest( crcSNPs[candDF$rsID,], promoters )
 
 candDF$nearestGene <- mcols(promoters)$geneID[subjectHits( distToNear )]
@@ -829,60 +853,11 @@ length( snpsWDistal[snpsWDistal %in% snpsWClose] )
 
 length(snpsWDistal)/length(unique(candDF$rsID))
 
-colnames( candDF )[1] <- "Putative target gene"
+colnames( candDF )[2] <- "Putative target gene"
 colnames( candDF )[4] <- "Nearest gene"
 
 candDF <- candDF[,c("rsID", "Nearest gene", "Putative target gene", "loopID", "chr_1", "start_1", "end_1", "chr_2", "start_2", "end_2")]
 
-write.csv( candDF, quote=FALSE, row.names=FALSE, file="../output/tables/supS_snpLoops.csv" )
-
-
-candDF$distalGenes <- strsplit( as.character(candDF$distalGenes), "," )
-promoters["TERC"]
-library(org.Hs.eg.db)
-
-for( i in seq_len( nrow( candDF ) ) ){
-    distGenes <- candDF$distalGenes[[i]]
-    candDF$distalGenesEns[[i]] <- select( org.Hs.eg.db,
-                                         keys=distGenes,
-                                         columns=c("ENSEMBL"), keytype="SYMBOL" )$ENSEMBL
-}
-x <- which(grepl("COLCA1", candDF$distalGenes))
-candDF$distalGenesEns[[x]] <- "ENSG00000196167"
-
-crcSNPs <- unlist( crcSNPs )
-
-qtlDat <-
-    rbind(
-        read.delim("/data/aryee/areyes/GB/GTExData/GTEx_Analysis_v7_eQTL/Colon_Sigmoid.v7.signif_variant_gene_pairs.txt",
-                   header=TRUE),
-        read.delim("/data/aryee/areyes/GB/GTExData/GTEx_Analysis_v7_eQTL/Colon_Transverse.v7.signif_variant_gene_pairs.txt",
-                   header=TRUE) )[,c("variant_id", "gene_id", "slope")]
-
-candDFLong <- tidyr::unnest( candDF[,c("rsID", "distalGenesEns")] )
-crcSNPs <- unlist(crcSNPs)
-mcols(crcSNPs)$variant_id <- sprintf("%s_%d_%s", gsub("chr", "", as.character( seqnames( crcSNPs ) ) ), start(crcSNPs), mcols(crcSNPs)$contigAllele )
-qtlDat$variant_id2 <- gsub( "(.*)_\\S+_b37$", "\\1", as.character( qtlDat$variant_id ) )
-qtlDat$gene_id2 <- gsub("\\.\\S$", "", qtlDat$gene_id)
-candDFLong <- candDFLong[as.character( candDFLong$rsID ) %in% names(crcSNPs),]
-candDFLong <- dplyr::left_join( candDFLong, as.data.frame( mcols(crcSNPs)[,c("rsID", "variant_id")] ))
-candDFLong$isQTL <- NA
-
-for( i in seq_len( nrow( candDFLong ) ) ){
-    candDFLong$isQTL[i] <- sum( qtlDat$gene_id2 %in% candDFLong$distalGenesEns[i] & qtlDat$variant_id2 %in% candDFLong$variant_id[i] )
-}
-
-candDFLong[candDFLong$isQTL > 0,]
-
-unlist( candDF$distalGenesEns )
-lengths(candDF$distalGenes)
-
-candDFLong <- tidyr::unnest(candDF)
-candDFLong <- dplyr::rename( candDFLong, geneID=distalGenes )
-candDFLong <- dplyr::left_join( candDFLong, dplyr::select(exprTCGA, geneID, pvalue.de, padj.de, lfc.de ) )
-
-png("pruena.png")
-boxplot( candDFLong$lfc.de, xlab="log fold change(tumor/normal)")
-dev.off()
-
+head( candDF )
 ```
+

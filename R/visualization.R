@@ -133,7 +133,7 @@ plotCoverage2 <- function( bamDir, plot_gr, sizeFactors=NULL, fun=function(x){x}
 plotCovProfileForSample <- function(
     sampleName, protein,
     plotGr,
-    bamPaths=system.file("inst/extdata/geodata", package="ColonDNATopology"),
+    bamPaths=system.file("extdata/geodata", package="ColonDNATopology"),
     suffix=".bw", ... ){
     samples <- file.path( bamPaths,
                           paste0( paste( sampleName, protein, sep="-"), suffix ) )
