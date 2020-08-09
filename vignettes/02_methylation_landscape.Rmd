@@ -1,0 +1,201 @@
+---
+title: "Enhancer promoter loops in colon tissue and colon normals"
+output: html_document
+abstract: "This vignette provides the code and processed data objects to explore the methylation landscape of colorectal tumors described in Johnstone, Reyes. et al 2020."
+---
+
+## Formatting the data into R objects
+
+```{r, eval=FALSE}
+library(bsseq)
+library(readr)
+cpgFiles <- list.files(
+  system.file("extdata", "geodata", package="ColonDNATopology"), 
+  pattern="cpg.gz", full.names=TRUE)
+cpgFiles <- cpgFiles[!grepl("wi", basename(cpgFiles))]
+names(cpgFiles) <- sub(".cpg.gz", "", basename(cpgFiles))
+
+standard_chrs <- paste0("chr", c( 1:22, "X" ))
+
+bsList <- bplapply( seq_along( names( cpgFiles ) ), function(sample){
+    message(sample)
+    tab <- read_tsv(cpgFiles[sample], 
+                    col_types = cols_only(chr = col_character(),
+                                          pos = col_integer(),
+                                          CT_count = col_integer(),
+                                          C_count = col_integer()
+                                          ))
+    tab$chr <- paste0("chr", tab$chr)
+    tab <- dplyr::filter( tab, chr %in% standard_chrs )
+    m <- tab[, "C_count"] # methylated count
+    cov <- tab[, "CT_count"]
+    bs <- data.frame( chr=tab[["chr"]], start=tab[["pos"]],
+                     end=tab[["pos"]], M=tab[["C_count"]],
+                     Cov=tab[["CT_count"]] )
+    bs <- as( bs, "GRanges" )
+    bs
+}, BPPARAM=MulticoreParam(6) )
+
+library(HDF5Array)
+bsList <- GRangesList( bsList )
+#bsList <- bsList[!names( files ) %in% c("GBM119", "GBM8", "GSC6LP")]
+
+allPos <- unique( unlist( bsList ) )
+mcols( allPos ) <- NULL
+names( allPos ) <- NULL
+allPos <- sort(allPos)
+
+allDat <- bplapply( seq_along(bsList), function( sample ){
+#    cat( sprintf( "%s\n", sample ) ) 
+    over <- findOverlaps( bsList[[sample]], allPos, type="equal" )
+    xx <- subjectHits( over )
+    xy <- queryHits( over )
+    M <- rep( 0, length( allPos ) )
+    Cov <- rep( 0, length( allPos ) )
+    M[xx] <- bsList[[sample]][xy]$M
+    Cov[xx] <- bsList[[sample]][xy]$Cov
+    list( M=M, Cov=Cov )
+}, BPPARAM=MulticoreParam(5) )
+
+M <- vapply( allDat, function(x) x[["M"]], FUN.VALUE=numeric(length(allPos)) )
+Cov <- vapply( allDat, function(x) x[["Cov"]], FUN.VALUE=numeric(length(allPos)) )
+rm(allDat)
+
+idxPerSamp <- split( seq_len(ncol(Cov)), names(cpgFiles) )
+Cov <- vapply( idxPerSamp, function(x){
+    rowSums( Cov[,x,drop=FALSE] )
+}, numeric(nrow(Cov)) )
+M <- vapply( idxPerSamp, function(x){
+    rowSums( M[,x,drop=FALSE] )
+}, numeric(nrow(M)) )
+all( colnames(M) == colnames(Cov) )
+
+library(HDF5Array)
+hdf5_M <- writeHDF5Array( M )
+hdf5_Cov <- writeHDF5Array( Cov )
+nms <- colnames( M )
+rm( M, Cov )
+
+bs <- BSseq(
+    chr=as.character( seqnames( allPos ) ),
+    pos=start(allPos),
+    M=hdf5_M,
+    Cov=hdf5_Cov,
+    sampleNames=nms )
+saveHDF5SummarizedExperiment( bs, dir="../inst/hdf5/se_hdf5", replace=TRUE )
+
+```
+
+## SS
+
+We load the R object containing the methylation data:
+
+```{r}
+library(bsseq)
+bsseq <- loadHDF5SummarizedExperiment(system.file( "hdf5", "se_hdf5", package="ColonDNATopology" ))
+
+colData(bsseq)$origin <- 
+  ifelse( colnames(bsseq) %in% c("FHC") | grepl("N$", colnames(bsseq) ), "normal", "COAD" )
+colData(bsseq)$originType <- ifelse( grepl("BRD|MGH", colnames(bsseq)), "primaryTissue", "cellLine")
+colData(bsseq)$originType[grep("5AZA|DMSO", colData(bsseq)$sample_id)] <- "AZAExp"
+colData(bsseq)$sample_id <- colnames(bsseq)
+```
+
+We load the data containing the information about CpG islands and open sea regions.
+
+```{r}
+data(cgi)
+cgi <- updateObject(cgi)
+seqlevelsStyle( cgi ) <- "UCSC"
+cgi_shore <- c(flank(cgi, width = 2000, start=TRUE),
+               flank(cgi, width = 2000, start=FALSE))
+open_sea <- gaps( reduce( c( cgi, cgi_shore ), ignore.strand=TRUE) )
+open_sea <- open_sea[!strand( open_sea ) %in% c("+", "-")]
+```
+
+We also load the pre-saved object containing the CIMP hypermethylated regions
+
+```{r}
+data(cimpHyper)
+cimpHyper <- subsetByOverlaps( cimpHyper, c(cgi, cgi_shore) )
+names( cimpHyper ) <- sprintf("cimpReg%0.8d", seq_len(length(cimpHyper)))
+
+cimpDefRegions <- getMeanMeth( bsseq, cimpHyper, numCpg=5 )
+cimpDefRegions <- cimpDefRegions[,grepl("MGH|BRD", colnames( cimpDefRegions ))]
+cimpDefRegions <- as.data.frame( cimpDefRegions )
+cimpDefRegions$regionID <- sprintf("region%.5d", seq_len(nrow(cimpDefRegions)))
+
+cimpDefRegions <- reshape2::melt( cimpDefRegions, id.vars="regionID")
+colnames( cimpDefRegions )[colnames( cimpDefRegions ) %in% "variable"] <- "sampleID"
+
+cimpDefRegions <- cbind( cimpDefRegions,
+                        as.data.frame( colData(bsseq) )[match(cimpDefRegions$sampleID, colData(bsseq)$sample_id),c("origin", "originType")] )
+
+rownames( cimpDefRegions ) <- NULL
+library(magrittr)
+newOrder <- as.character(
+    dplyr:::group_by( cimpDefRegions, sampleID ) %>%
+    dplyr:::summarize( m=median(value, na.rm=TRUE) ) %>%
+    dplyr:::arrange( m ) %>% .$sampleID )
+
+newOrder <- c( newOrder[grepl("N$|C$", newOrder)],  (newOrder[!grepl("N$|C$", newOrder)] ))
+
+cimpDefRegions$sampleID <- factor( cimpDefRegions$sampleID, levels=newOrder )
+cimpDefRegions$origin <- ifelse( cimpDefRegions$origin == "COAD", "Tumor", "Normal" )
+
+scaleCols <- c("#984ea399", "#4daf4a99")
+names( scaleCols ) <- c("Tumor", "Normal")
+
+data(labels)
+
+levels(cimpDefRegions$sampleID) <- fixLabels(levels(cimpDefRegions$sampleID), labels)
+
+```
+
+```{r}
+library(ggplot2)
+library(cowplot)
+theme_set(theme_cowplot())
+pl <- cimpDefRegions %>%
+    dplyr::group_by( sampleID ) %>%
+    ggplot(aes(sampleID, value, fill=origin)) +
+    geom_boxplot(outlier.shape=NA) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5 ))+
+    theme(legend.position="top") +
+    labs(fill="") +
+    ylab("CpG Island Methylation") +
+    xlab("")+
+    scale_fill_manual( values=scaleCols )
+pl
+```
+
+```{r}
+data(blocks)
+names(blocks) <- sprintf("block%.7d", seq_len( length(blocks) ) )
+
+blocksMeth <- getMeanMeth( bsseq, blocks, numCpg=3, subRegions = open_sea )
+blocksMeth <- as.data.frame( blocksMeth )
+blocksMeth$blockID <- sprintf("block%.7d", seq_len( nrow( blocksMeth ) ) )
+blocksMeth <- blocksMeth[,grepl("MGH|BRD|blockID", colnames(blocksMeth))]
+
+blocksDf <- reshape2:::melt( blocksMeth, id.vars=c("blockID") )
+blocksDf <- na.omit(blocksDf)
+levels( blocksDf$variable ) <- fixLabels(levels( blocksDf$variable ), labels)
+
+
+newOrder <- dplyr:::group_by( blocksDf, variable ) %>%
+  dplyr:::summarize( m=median(value, na.rm=TRUE) ) %>%
+  dplyr:::arrange( m ) %>% .$variable
+blocksDf$variable <- factor( blocksDf$variable, levels=rev(newOrder) )
+blocksDf$origin <- ifelse( grepl( "^N", blocksDf$variable), "Normal", "Tumor" )
+
+
+pl <- ggplot( blocksDf, aes( variable, value, fill=origin ) ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5 ),
+        panel.grid.major.y=element_line(color="lightgray"), legend.position="top") +
+  geom_boxplot(width=.7, outlier.shape=NA) +
+  labs(x="", y="Open Sea Methylation", fill="") +
+  scale_fill_manual( values=scaleCols )
+pl
+
+```

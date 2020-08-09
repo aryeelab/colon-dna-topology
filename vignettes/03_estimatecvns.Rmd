@@ -1,0 +1,30 @@
+---
+title: "Estimate cnvs"
+output: html_document
+abstract: "Calcualting CNVs for each sample"
+---
+
+
+```{r}
+
+library(bsseq)
+## library(ColonDNATopology)
+library(HDF5Array)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(BiocParallel)
+bsseq <- loadHDF5SummarizedExperiment(system.file( "hdf5", "se_hdf5", package="ColonDNATopology" ))
+```
+
+
+```{r}
+
+segmentation_40K <- copyNumberForRes( bsseq, 40000, BPPARAM=MulticoreParam(5) )
+segmentation_100K <- copyNumberForRes( bsseq, 100000, BPPARAM=MulticoreParam(5) )
+
+
+
+saveRDS( copyNums, file="../output/rds/segmentation_40K.rds" )
+saveRDS( copyNums, file="../output/rds/segmentation_100K_v4.rds" )
+
+
+```
