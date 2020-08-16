@@ -1,0 +1,48 @@
+---
+title: "Reformat RNA-seq data"
+output: html_document
+abstract: ""
+---
+
+
+```{r}
+
+library(tximport)
+library(rtracklayer)
+
+salmonFiles <- list.files(
+  system.file("extdata", "geodata", package="ColonDNATopology"),
+  pattern="sf.gz$", full.names=TRUE)
+
+df <- data.frame(
+    sampleID=gsub(".sf.gz", "", basename(salmonFiles)))
+df$cell <- gsub("-\\d*$", "", df$sampleID)
+df$quantFile <- salmonFiles
+
+gtf <- import(
+    file.path(system.file("extdata", "annotation", package="ColonDNATopology"),
+              "gencode.v30lift37.annotation.gtf.gz"))
+
+##dsdOld <- readRDS("/data/aryee/bernstein/rnaseq/SummarizedData/counts/dsdCL.rds")
+
+res <- unique(na.omit(as.data.frame( mcols(gtf)[,c("gene_name", "transcript_id")] )))
+res <- res[,2:1]
+
+library(GenomicFeatures)
+mcols(gtf)$gene_id <- mcols(gtf)$gene_name
+txdb <- makeTxDbFromGRanges( gtf )
+exonicParts <- exonicParts( txdb, linked.to.single.gene.only = TRUE )
+exonicParts <- split( exonicParts, mcols( exonicParts )$gene_id )
+
+
+
+tx <- tximport( df$quantFile, type="salmon", tx2gene=res )
+library(DESeq2)
+dds <- DESeqDataSetFromTximport( tx, DataFrame(df), ~1 )
+
+dds <- dds[names(rowRanges(dds)) %in% names(exonicParts)]
+rowRanges( dds ) <- exonicParts[names( rowRanges( dds ) )]
+
+save( dds, file="../data/dds.RData" )
+
+```

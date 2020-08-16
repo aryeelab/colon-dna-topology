@@ -7,18 +7,23 @@ abstract: "This vignette provides the code and processed data objects to explore
 ## Formatting the data into R objects
 
 ```{r, eval=FALSE}
+
 library(bsseq)
 library(readr)
+library(BiocParallel)
+
 cpgFiles <- list.files(
   system.file("extdata", "geodata", package="ColonDNATopology"), 
   pattern="cpg.gz", full.names=TRUE)
-cpgFiles <- cpgFiles[!grepl("wi", basename(cpgFiles))]
+
+##cpgFiles <- cpgFiles[!grepl("wi", basename(cpgFiles))]
+##cpgFiles <- cpgFiles[grepl("wi", basename(cpgFiles))]
 names(cpgFiles) <- sub(".cpg.gz", "", basename(cpgFiles))
 
 standard_chrs <- paste0("chr", c( 1:22, "X" ))
 
 bsList <- bplapply( seq_along( names( cpgFiles ) ), function(sample){
-    message(sample)
+    message(cpgFiles[sample])
     tab <- read_tsv(cpgFiles[sample], 
                     col_types = cols_only(chr = col_character(),
                                           pos = col_integer(),
@@ -34,7 +39,7 @@ bsList <- bplapply( seq_along( names( cpgFiles ) ), function(sample){
                      Cov=tab[["CT_count"]] )
     bs <- as( bs, "GRanges" )
     bs
-}, BPPARAM=MulticoreParam(6) )
+}, BPPARAM=SerialParam() )
 
 library(HDF5Array)
 bsList <- GRangesList( bsList )
@@ -55,7 +60,7 @@ allDat <- bplapply( seq_along(bsList), function( sample ){
     M[xx] <- bsList[[sample]][xy]$M
     Cov[xx] <- bsList[[sample]][xy]$Cov
     list( M=M, Cov=Cov )
-}, BPPARAM=MulticoreParam(5) )
+}, BPPARAM=MulticoreParam(2) )
 
 M <- vapply( allDat, function(x) x[["M"]], FUN.VALUE=numeric(length(allPos)) )
 Cov <- vapply( allDat, function(x) x[["Cov"]], FUN.VALUE=numeric(length(allPos)) )
@@ -82,6 +87,7 @@ bs <- BSseq(
     M=hdf5_M,
     Cov=hdf5_Cov,
     sampleNames=nms )
+
 saveHDF5SummarizedExperiment( bs, dir="../inst/hdf5/se_hdf5", replace=TRUE )
 
 ```

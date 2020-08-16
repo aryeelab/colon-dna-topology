@@ -2,8 +2,11 @@
 
 export(copyNumberForRes)
 export(doSegmentation)
+export(estimateCompartmentsForSamples)
 export(fixLabels)
 export(getCompBinning)
+export(minfi)
 import(CNAnorm)
 importFrom(BiocParallel,bplapply)
+importFrom(Matrix,band)
 importFrom(biovizBase,GCcontent)

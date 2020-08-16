@@ -1,0 +1,277 @@
+---
+title: "Reformat HiC and calculate eigenvectors"
+output: html_document
+abstract: ""
+---
+
+```{r}
+
+library(HDF5Array)
+library(sparseHiC)
+library(BiocParallel)
+
+```
+
+
+```{r, eval=FALSE}
+
+interactionFiles <- list.files(
+    system.file("extdata/geodata", package="ColonDNATopology"),
+    pattern="iced.matrix.gz", full.names=TRUE)
+
+allHicSamples <- unique(gsub("_100000_iced.matrix.gz|_40000_iced.matrix.gz", "",
+     basename(interactionFiles)))
+
+
+bedFiles <- system.file("extdata/geodata", package="ColonDNATopology")
+bedFiles <- list.files(bedFiles, "bin.*bed$")
+bedFiles <- file.path(
+    system.file("extdata/geodata", package="ColonDNATopology"),
+    bedFiles )
+stopifnot(all( file.exists( bedFiles ) ) )
+
+for( sample in allHicSamples ){
+    print( sample )
+    outFile <- sprintf("../data/hic_%s.RData", sample)
+    if( file.exists( outFile ) ){
+        next()
+    }
+    genomeBuild <- "hg19"
+    resolutions <- c( "40000", "100000" )
+    interFiles <- sprintf("%s_%s_iced.matrix.gz", sample, resolutions)
+    interFiles <- file.path(
+        system.file("extdata/geodata", package="ColonDNATopology"),
+        interFiles )
+    stopifnot(all( file.exists( interFiles ) ) )
+    hic <- import.HiCPro(
+        matrix.files=interFiles, bed.files=bedFiles,
+        resolutions=resolutions, sampleName=sample,
+        genomeBuild="hg19",
+        BPPARAM=MulticoreParam(6), n=0, temp=FALSE )
+    oname <- gsub(".RData", "", basename(outFile))
+    assign( eval(oname), hic )
+    save( list=eval(expression(oname)), file=outFile )
+    rm(hic)
+}
+
+```
+
+
+```{r}
+
+hicSamples <- list.files( system.file("data", package="ColonDNATopology"), pattern="^hic" )
+hicSamples <- gsub(".RData|hic_", "", hicSamples)
+#source("../R/compartmentSupport.R")
+
+chrs <- paste0("chr", c(1:22, "X") )
+register(MulticoreParam(5))
+
+compartments <- estimateCompartmentsForSamples( hicSamples, chrs )
+
+data(hic_BRD3162)
+hic <- hic_BRD3162
+rm(hic_BRD3162)
+
+comp <- mapply(
+    function( compartments, res ){
+        do.call(rbind,
+                lapply( chrs,
+                       function(r){
+                           nm <- r
+                           x <- as.numeric( rownames( hic@resolutionNamedList[[res]][[nm]] ) )
+                           rs <- data.frame( chr=r, pos=x, compartments[[r]] )
+                           addR <- !grepl("\\.\\d{1}$", colnames(rs))
+                           addR[1:2] <- FALSE
+                           colnames(rs)[addR] <- paste0( colnames(rs)[addR], ".1" )
+                           colnames(rs) <- gsub("\\.(\\d+{1})$", ".rep\\1", colnames(rs) )
+                           rs
+                       } ) ) },
+    list( compartments ),
+    c("100000"), SIMPLIFY=FALSE )
+
+names( comp ) <- c( "100000" )
+
+res <- "100000"
+
+compartments <- comp
+
+colnames(compartments[[1]]) <-
+    gsub("(Wi38.*)_(\\d).rep1", "\\1.rep\\2", colnames(compartments[[1]]) )
+
+
+compartmentGR <- GRanges( compartments[[res]]$chr,
+        IRanges(
+            compartments[[res]]$pos + 1,
+            compartments[[res]]$pos + as.numeric(res) ) )
+
+mcols( compartmentGR ) <- compartments[[res]][,!colnames( compartments[[res]] ) %in% c("chr", "pos")]
+
+colnames(mcols(compartmentGR)) <- gsub(".rep(\\d)", "_rep\\1_eigen",
+                                       colnames(mcols(compartmentGR)))
+
+
+
+```
+
+```{r}
+
+data(dds)
+dsd <- dds
+data(dsdWi38)
+
+library(rtracklayer)
+
+gtf <- import(
+    file.path(system.file("extdata", "annotation", package="ColonDNATopology"),
+              "gencode.v30lift37.annotation.gtf.gz"))
+ptg <- unique( gtf$gene_name[gtf$gene_type == "protein_coding"] )
+
+dsdWi38 <- dsdWi38[,colData(dsdWi38)$heatStress == "no" & colData(dsdWi38)$brd4 == "none"]
+dsdWi38 <- dsdWi38[rownames(dsdWi38) %in% ptg,]
+
+dsd <- dsd[rownames(dsd) %in% ptg,]
+
+
+design( dsd ) <- ~ 1
+dsd <- dsd[!duplicated( rownames( dsd ) ),]
+
+colData(dsd)$sample_id <- colData(dsd)$sampleID
+colnames(dsd) <- colData(dsd)$sample_id
+
+colData(dsd)$group <- factor( gsub("-\\d$", "", colnames( dsd )) )
+singleSeqnames <- elementNROWS( seqnames( range( rowRanges( dsd ) ) ) ) == 1
+dsd <- dsd[singleSeqnames,]
+dsd <- dsd[!as.character( seqnames( unlist( range( rowRanges( dsd ) ) ) ) ) %in% "chrY",]
+#dsd <- dsd[,grepl("BRD|MGH", colData(dsd)$group)]
+#dsd <- estimateSizeFactors(dsd)
+dsdWi38 <- dsdWi38[rownames(dsd),]
+mcols(compartmentGR) <- mcols(compartmentGR)[,!grepl("imr90", colnames(mcols(compartmentGR)))]
+colData(dsd) <- colData(dsd)[,c("sample_id", "group")]
+colData(dsdWi38) <- DataFrame( sample_id="Wi38", group="Wi38" )
+dsd <- cbind( dsdWi38, dsd )
+
+
+```
+
+This code makes sure that the positive eigenvectors always correspond to compartment A
+
+```{r}
+
+dsd <- estimateSizeFactors(dsd)
+colnames(dsd) <- colData(dsd)$sample_id
+
+for( cl in colnames( mcols( compartmentGR ) ) ){
+    print(cl)
+    sm <- gsub("_.*", "", gsub("\\.", "-", gsub("_rep\\d*_eigen|\\.rao|\\.0h", "", cl)))
+    if( grepl("MGH|BRD", cl) ){
+        useE <- grepl("MGH|BRD", colnames(dsd))
+    }else{
+        useE <- colData(dsd)$group %in% sm
+    }
+    comps <- lapply( unique( as.character( seqnames(compartmentGR) ) ), function(chr){
+        print( chr )
+        compSub <- compartmentGR[seqnames( compartmentGR ) == chr,]
+        eigenVec <- mcols( compSub )[[cl]]
+        lt <- quantile( eigenVec, 0.5, na.rm=TRUE )
+        ut <- quantile( eigenVec, 0.5, na.rm=TRUE )
+        compSubPos <- compSub[which(eigenVec > ut),]
+        compSubNeg <- compSub[which(eigenVec < lt),]
+        pos <- median( counts(dsd, normalized=TRUE)[queryHits( findOverlaps( rowRanges(dsd),
+                                                                            compSubPos, type="within" ) ),useE])
+        neg <- median( counts(dsd, normalized=TRUE)[queryHits( findOverlaps( rowRanges(dsd),
+                                                                            compSubNeg, type="within" ) ),useE])
+        if( pos > neg ){
+            return( eigenVec )
+        }else{
+            return( -1 * eigenVec )
+        }
+    } )
+    mcols(compartmentGR)[[cl]] <- Reduce( c, comps )
+}
+
+meanComp <- sapply(
+    split( colnames(mcols(compartmentGR)),
+          gsub("_rep\\d_eigen", "", colnames( mcols(compartmentGR) ) ) ),
+##          sapply( strsplit( colnames( mcols(compartmentGR) ), "_" ), "[[", 1)),
+    function(x){
+        rowMeans( as.data.frame(mcols(compartmentGR))[,x,drop=FALSE], na.rm=TRUE )
+    } )
+
+colnames(meanComp) <- paste0( colnames( meanComp ), "_mean_eigen")
+mcols(compartmentGR) <- cbind( mcols(compartmentGR), DataFrame(meanComp) )
+names( compartmentGR ) <- sprintf( "bin%0.5d", seq_len( length( compartmentGR ) ) )
+
+```
+
+## Add open sea methylation data
+
+
+```{r}
+
+data(cgi)
+cgi <- updateObject(cgi)
+seqlevelsStyle( cgi ) <- "UCSC"
+cgi_shore <- c(flank(cgi, width = 2000, start=TRUE),
+               flank(cgi, width = 2000, start=FALSE))
+open_sea <- gaps( reduce( c( cgi, cgi_shore ), ignore.strand=TRUE) )
+open_sea <- open_sea[!strand( open_sea ) %in% c("+", "-")]
+
+library(bsseq)
+bsseq <- loadHDF5SummarizedExperiment(system.file( "hdf5", "se_hdf5", package="ColonDNATopology" ))
+
+
+methPerBin <- getMeanMeth( bsseq, compartmentGR,
+                          numCpg=0, subRegions=open_sea )
+
+methPerBinWi <- getMeanMeth( bsseq, compartmentGR,
+            numCpg=0,
+            subRegions=open_sea, minCov=0 )
+
+colnames(methPerBinWi) <- gsub("_(\\d)$", "-\\1", colnames( methPerBinWi ))
+
+methPerBin <- cbind( methPerBin[,!grepl("wi", colnames(methPerBin))], methPerBinWi[,grepl("wi", colnames(methPerBinWi))] )
+
+meanMeth <- sapply( split( seq_len( ncol( methPerBin ) ),
+                          gsub("-\\d$", "", colnames( methPerBin )) ),
+                   function(x){ rowMeans( methPerBin[,x,drop=FALSE] ) } )
+
+colnames( meanMeth ) <- paste0( colnames( meanMeth ), "_mean" )
+
+meanMeth <- cbind( methPerBin, meanMeth )
+
+addRep <- !grepl("mean", colnames(meanMeth))
+colnames(meanMeth)[addRep] <- gsub("-(\\d)$", "_rep\\1", colnames(meanMeth)[addRep])
+addRep <- !grepl( "mean$|rep\\d$", colnames(meanMeth))
+colnames( meanMeth )[addRep] <- paste0( colnames( meanMeth )[addRep], "_rep1" )
+colnames(meanMeth) <- paste0( colnames( meanMeth ), "_opensea" )
+
+mcols(compartmentGR) <- cbind( mcols(compartmentGR), DataFrame(meanMeth) )
+
+data(hansen)
+
+hansen <- subsetByOverlaps( hansen, open_sea )
+methHansen <- as.matrix( bsseq:::getMeth( hansen, compartmentGR,
+                                         type="raw", what="perRegion" ) )
+colnames(methHansen) <- paste(
+    paste0("hansen",tolower(colData( hansen )$type)),
+    sprintf("rep%d", c( 1:3, 1:3 ) ), "opensea", sep="_")
+rm(hansen)
+
+mcols( compartmentGR ) <- cbind( mcols(compartmentGR), DataFrame( methHansen ) )
+mcols( compartmentGR )$middle <- ( start( compartmentGR ) + end( compartmentGR ) ) / 2
+
+```
+
+## Add CNV data
+
+```{r}
+data(segmentation_100K)
+copyNumbers <- segmentation_100K
+
+colnames( mcols( copyNumbers ) ) <- paste0( colnames( mcols( copyNumbers ) ), "_coverage" )
+#compartmentGR <- compartmentGR[!seqnames(compartmentGR) == "chrX",]
+mcols(compartmentGR) <- cbind( mcols( compartmentGR ), mcols( copyNumbers ) )
+
+##save( compartmentGR, file="../data/compartmentGR.RData" )
+
+```
