@@ -1,0 +1,22 @@
+
+---
+title: "Enhancer promoter loops in colon tissue and colon normals"
+output: html_document
+abstract: "This vignette provides the code to convert the processed HiChip data into an R object"
+---
+
+
+```{r}
+library(diffloop)
+
+loops <- loopsMake(
+    system.file("extdata/geodata", package="ColonDNATopology"),
+    mergegap=0)
+
+cc <- loops@counts
+rownames(loops@colData) <- gsub(".filt.intra", "", rownames(loops@colData))
+loops@colData$groups <- ifelse( grepl("N$", rownames( loops@colData )), "normal", "tumor")
+
+save( loops, file="../data/loopsAll_hichipper2.RData" )
+
+```

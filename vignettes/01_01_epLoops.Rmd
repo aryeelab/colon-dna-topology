@@ -8,6 +8,7 @@ abstract: "This vignette provides the code and processed data objects to reprodu
 We first load the necessary libraries to complete this vignette. 
 
 ```{r, message=FALSE}
+
 library(diffloop)
 library(magrittr)
 library(genefilter)
@@ -24,10 +25,11 @@ The code below loads pre-computed R objects containing the *HiChIP* counts for e
 
 ```{r}
 
-library(ColonDNATopology)
+##library(ColonDNATopology)
 
-data(loopsAll_hichipper)
+data(loopsAll_hichipper2)
 data(promoters_per_transcript)
+loopsAll <- loops
 
 promoters <- unlist(range(promoters))
 nms <- names(promoters)
