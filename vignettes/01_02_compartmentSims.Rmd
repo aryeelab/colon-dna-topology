@@ -1,0 +1,108 @@
+---
+title: "Enhancer promoter loops in colon tissue and colon normals"
+output: html_document
+abstract: "This vignette provides the code and processed data objects to reproduce compartment clustering"
+---
+
+```{r}
+
+library(GenomicRanges)
+library(matrixStats)
+data(compartmentGR)
+data(cohort_data)
+
+comp <- compartmentGR
+comp <- comp[!seqnames(comp) == "chrX",]
+compVals <- as.data.frame(mcols(comp)[,(grepl("mean_eigen", colnames( mcols( comp ) )) &
+                                        !grepl("DMSO|AZA|Adenoma|Wi38_46", colnames( mcols( comp ) ) ))
+                                      ] )
+compVals <- compVals[rowSums( is.na( compVals ) ) == 0,]
+topVars <- head( order( rowVars( as.matrix(compVals) ), decreasing=TRUE ), 10000 )
+#compVals <- compVals[topVars,]
+eigenSim <- prcomp( t(compVals) )$x
+##compValsAll <- compVals
+
+library(pheatmap)
+colnames( compVals ) <- gsub( "_mean_eigen", "", colnames(compVals) )
+colnames( compVals ) <- gsub("HCT116.rao", "HCT116 (Rao)", gsub("HCT116.0h", "HCT116", colnames( compVals )))
+colnames( compVals ) <- gsub("HCT116.5AZA.24h", "HCT116 (AZA)", colnames( compVals ) )
+colnames( compVals ) <- gsub("HCT116.DMSO.24h", "HCT116 (DMSO)", colnames( compVals ) )
+compValsAll <- compVals
+
+colAnnotation <- data.frame(
+    Type=ifelse( grepl("MGH|BRD", colnames(compVals) ), "Tumor", "Cell line"), stringsAsFactors=FALSE )
+rownames(colAnnotation) <- colnames(compVals)
+colAnnotation$Type[grepl("N$|N.sb", rownames( colAnnotation ))] <- "Normal"
+compVals <- compVals[,order(colAnnotation$Type)]
+colAnnotation$Cohort <- ifelse(
+    gsub(".sb", "", rownames(colAnnotation)) %in% cohort2IDs |
+    grepl("Wi", rownames(colAnnotation) ), "validation", "original" )
+colAnnotation <- colAnnotation[!duplicated( gsub(".sb", "", rownames( colAnnotation )) ),]
+
+library( gclus )
+library( vegan )
+library(dendextend)
+
+annColors <- list(
+    Type = c( `Cell line` = "#ff7f00", `Tissue` = "#00000099" )
+)
+
+annColors <- list(
+    Type = c( `Normal`="#4daf4a", `Tumor`="#984ea3", `Cell line`= "#00000090" ),
+    Cohort = c(original="white", validation="black") )
+
+compVals <- compVals[,!duplicated(gsub(".sb", "", colnames(compVals)))]
+colnames(compVals) <- gsub(".sb", "", colnames( compVals ))
+colnames(compVals) <- fixLabels(colnames(compVals), labels)
+compVals <- compVals[,colnames(compVals) %in% cohort1Labs |
+                colnames(compVals) %in% c("SW480", "HCT116", "FHC", "LS174T", "RKO")]
+hcl <- hclust( dist( cor(compVals) ) , method = "average" )
+hcl$order <- c( hcl$order[4:8], hcl$order[9:11], hcl$order[3:1], hcl$order[12:16] )
+
+##colAnnotation[!duplicated(gsub(".sb", "", rownames(colAnnotation))),]
+rownames(colAnnotation) <- fixLabels( gsub(".sb", "", rownames(colAnnotation)), labels )
+#colAnnotation$Cohort <- NULL
+```
+
+```{r, fig.width=4.1, fig.heiht=3.6, out.width = "75%"}
+
+library(RColorBrewer)
+
+pheatmap(
+    cor( compVals ), show_rownames=FALSE,
+    color=(colorRampPalette(brewer.pal(9, "Blues"), bias=0.25)(100)),
+    breaks=seq(0, 1, length.out=101),
+    annotation_col=colAnnotation[,"Type",drop=FALSE],
+    annotation_colors=annColors,
+    annotation_names_col = FALSE,
+    cluster_cols=hcl,
+    cluster_rows=hcl,
+    treeheight_col=45,
+    treeheight_row=45 )
+
+```
+
+
+```{r, fig.width=4.6, fig.height=4.0, out.width = "75%"}
+
+compVals <- compValsAll[,!grepl("Wi38", colnames( compValsAll ))]
+compVals <- compVals[,!grepl("Rao", colnames(compVals))]
+compVals <- compVals[,!duplicated(gsub(".sb", "", colnames(compVals)))]
+colnames(compVals) <- gsub(".sb", "", colnames( compVals ))
+colnames(compVals) <- fixLabels(colnames(compVals), labels)
+
+hcl <- hclust( dist( cor(compVals) ) , method = "average" )
+hcl$order <- c( hcl$order[2:19], hcl$order[1], hcl$order[20:24] )
+
+pheatmap( cor( compVals ), show_rownames=FALSE,
+         color=(colorRampPalette(brewer.pal(9, "Blues"), bias=0.25)(100)),
+         breaks=seq(0, 1, length.out=101),
+         annotation_col=colAnnotation,
+         annotation_colors=annColors,
+         annotation_names_col = FALSE,
+         cluster_cols=hcl,
+         cluster_rows=hcl,
+         treeheight_col=45,
+         treeheight_row=45)
+
+```

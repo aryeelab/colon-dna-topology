@@ -1,0 +1,65 @@
+---
+title: "Enhancer promoter loops in colon tissue and colon normals"
+output: html_document
+abstract: "Analysis of TADs"
+---
+
+## Visualization
+
+```{r}
+
+devtools::load_all()
+
+allSamples <- list.files(
+    system.file("data", package="ColonDNATopology"),
+    pattern="^hic" )
+
+allSamples <- allSamples[grepl("BRD|MGH", basename( allSamples ))]
+allSamples <- gsub("hic_|.RData", "", basename( allSamples ))
+
+plotGR <- GRanges( "chr14", IRanges( 2.8e7, 1e8 ) )
+allChr <- GRanges("chr14", IRanges(1, seqlengths( blocks )["chr14"]) )
+scaleCols <- c("#b2182b90", "#2166ac90")
+names( scaleCols ) <- c("Cancer", "Normal")
+
+data(labels)
+
+hicSamples <- allSamples
+
+hasSuffix <- grepl("-sb", hicSamples)
+
+hicSamples <- labels[gsub("-sb", "", hicSamples)]
+
+names(hicSamples)[hasSuffix] <- paste0(names(hicSamples)[hasSuffix], "-sb")
+
+tmrs <- hicSamples[grepl("^T", hicSamples)]
+tmrs <- tmrs[order(as.numeric(gsub("T", "", tmrs)))]
+nrms <- hicSamples[grepl("^N", hicSamples)]
+nrms <- nrms[order(as.numeric(gsub("N", "", nrms)))]
+
+hicSamples <- c(
+    names(c(nrms, tmrs)), c("HCT116-0h-1", "LS174T-1", "RKO-1", "SW480-1", "FHC-1") )
+hicSamples <- hicSamples[!duplicated(gsub("-sb", "", hicSamples))]
+labs <- fixLabels( gsub("-sb", "", hicSamples), labels )
+
+```
+
+```{r, fig.height=13.5, fig.width=10, out.width = "75%"}
+
+library(ggplot2)
+library(GenomeMatrix)
+library(BiocParallel)
+library(ggpubr)
+
+register(MulticoreParam(6))
+register(SerialParam())
+
+pdf("Rplots.pdf", height=13.5, width=10)
+plotAllHics( hicSamples, res="100000", plotGR=plotGR, 
+            fun=function(x){log2(x+1)}, heightProp=0.05, matType="iced",
+            colorBias=.25, autoZlim=0.99,
+            colPalette=brewer.pal(9, "Reds")[1:6],
+            extend=0.5, withLabels=FALSE, highlight=NULL )
+dev.off()
+
+```

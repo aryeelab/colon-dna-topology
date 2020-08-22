@@ -168,15 +168,10 @@ plotGenesFromGRangesList <- function( grangesList, plot_gr, gpSelf=FALSE ){
 }
 
 
-plotHiCProfileForSample <- function( sample, res="50000", plotGR, fun=function(x){ log10(x+1)}, protocol="hic", matType="raw", boundaries=NULL, ctcfSites=NULL, autoZlim=NULL, ... ){
-    if( matType=="iced"){
-        mat <- readRDS(sprintf( "/data/aryee/bernstein/hic/firecloud/%s.sparsehic.rds", sample))
-    }else{
-        mat <-
-            readRDS(
-                sprintf( "/data/aryee/bernstein/%s/SummarizedData/data/sparseHiC/%s/%s_%s_%s.rds",
-                        protocol, matType, protocol, matType, sample ) )
-    }
+plotHiCProfileForSample <- function( sample, res="50000", plotGR, fun=function(x){ log10(x+1)},
+                                    protocol="hic", matType="raw", boundaries=NULL, ctcfSites=NULL, autoZlim=NULL, ... ){
+    #data(sprintf("hic_%s", sample))
+    mat <- get(sprintf("hic_%s", sample))
     chr <- as.character( seqnames(plotGR) )
     mat <- mat@resolutionNamedList[[res]][[chr]]
     mat <- as.matrix( mat )
@@ -188,36 +183,9 @@ plotHiCProfileForSample <- function( sample, res="50000", plotGR, fun=function(x
         zlim <- quantile( fun(mat), autoZlim )
     }
     p <- matrixPlotter( fun(mat), granges, plotGR, zlim=zlim, ... )
-    if( !is.null( boundaries ) ){
-        boundaries <- subsetByOverlaps( boundaries, plotGR )
-        p <- p +
-            geom_vline(
-                data = as.data.frame( boundaries ),
-                aes( xintercept=start ), colour="black",
-                linetype=3 )
-    }
-    if( !is.null( ctcfSites ) ){
-        ctcfSites <- subsetByOverlaps( ctcfSites, plotGR )
-        p <- p + geom_rect(
-                     data = as.data.frame( ctcfSites ), inherit.aes=FALSE,
-                     aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
-                     colour="#41ab5d", fill=NA )
-    }
     p# + xlim(start(plotGR), end(plotGR))
 }
 
-#plotCovProfileForSample <- function( sampleName, protein,
-#                                   plotGr,
-#                                  bamPaths="/data/aryee/bernstein/chip/SummarizedData/bamwd",
-#                                     suffix="-wd-sorted.bam", ... ){
-#     samples <- file.path( bamPaths,
-#                          paste0( paste( sampleName, protein, sep="-"), suffix ) )
-#     stopifnot(file.exists( samples ))
-#     pp <- plotCoverage( samples,
-#                        plot_gr=plotGr,
-#                        nm=protein,
-#                        nms=sampleName, ... )
-# }
 
 plotGenomicVector <- function( coordinates, vector, plotGR, highlight, iter=3, title=""){
 #    start( plotGR ) <- start( plotGR ) - 200000
