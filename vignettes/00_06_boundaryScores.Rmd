@@ -12,17 +12,18 @@ devtools::load_all()
 allSamples <- list.files(
     system.file("data", package="ColonDNATopology"),
     pattern="^hic" )
-allSamples <- allSamples[grepl("BRD|MGH", basename( allSamples ))]
+#allSamples <- allSamples[grepl("BRD|MGH", basename( allSamples ))]
 allSamples <- gsub("hic_|.RData", "", basename( allSamples ))
 
 library(sparseHiC)
 library(BiocParallel)
 
-source("../R/boundaryScore.R")
+#source("../R/boundaryScore.R")
 
 register(MulticoreParam(5))
 
 boundaryScores <- calculateBoundaryScores( allSamples, res="40000", steps=c(5, 10, 20) )
 
+save(boundaryScores, file="../data/boundaryScores.RData")
 
 ```

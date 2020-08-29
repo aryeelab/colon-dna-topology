@@ -54,12 +54,152 @@ library(ggpubr)
 register(MulticoreParam(6))
 register(SerialParam())
 
-pdf("Rplots.pdf", height=13.5, width=10)
 plotAllHics( hicSamples, res="100000", plotGR=plotGR, 
             fun=function(x){log2(x+1)}, heightProp=0.05, matType="iced",
             colorBias=.25, autoZlim=0.99,
             colPalette=brewer.pal(9, "Reds")[1:6],
             extend=0.5, withLabels=FALSE, highlight=NULL )
-dev.off()
+
+```
+
+
+```{r}
+
+data("boundaryScores")
+
+boundary <- boundaryScores %>%
+    dplyr::filter( sampleID %in% hicSamples ) %>%
+    dplyr::filter( bin_num == 10, chr != "chrX" ) %>%
+    dplyr::select( sampleID, chr, pos, within_vs_cross ) %>%
+    reshape2::dcast( chr + pos ~ sampleID, value.var="within_vs_cross" )
+
+library(matrixStats)
+
+tiledBoundaryScores <- getTiledScores( boundary )
+
+tiledBoundaryScores$sample <- factor(gsub("-\\d$", "", tiledBoundaryScores$sample))
+
+levels( tiledBoundaryScores$sample ) <-
+    gsub("-sb", "", levels( tiledBoundaryScores$sample ))
+
+levels( tiledBoundaryScores$sample ) <-
+    fixLabels( levels(tiledBoundaryScores$sample),
+                                                  labels )
+
+tiledBoundaryScores$sample <- factor( tiledBoundaryScores$sample, levels=gsub("-1", "", labs) )
+
+levels( tiledBoundaryScores$sample ) <- gsub("-1$|-0h", "",
+                                             levels(tiledBoundaryScores$sample))
+
+
+```
+
+```{r, fig.height=5, fig.width=4.5, out.width = "75%"}
+
+#png( "../output/plots/heatmaps_boundaries.png", res=300,
+#    unit="in", height=5, width=4.5 )
+as.data.frame(tiledBoundaryScores) %>%
+    ggplot( aes(binNum, id, fill=score) ) +
+    geom_tile() +
+    facet_wrap( ~sample, ncol=5) +
+    scale_fill_gradientn(
+        colours =
+            colorRampPalette( brewer.pal(9, "Blues"), bias=0.9 )(100) ) +
+    theme(
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x=element_text(angle=35, hjust=1) ) +
+    scale_x_continuous( breaks = c(1, 6, 11),
+                       labels=c("-150", "0", "150") ) +
+    labs( y="Boundaries", x="Distance from boundary (Kb)", fill="Score" )
+#dev.off()
+
+```
+
+
+```{r}
+
+library( gclus )
+library( vegan )
+library( dendextend )
+
+boundMat <- tiledBoundaryScores %>%
+    dplyr::filter( binNum == 6 ) %>%
+    reshape2:::dcast( id ~ sample, value=score ) %>%
+    dplyr::select( -id )
+topVars <- head( order( rowVars( as.matrix(boundMat) ), decreasing=TRUE ), 1000 )
+boundMat <- boundMat[topVars,]
+
+hcl <- hclust( 1-as.dist( cor(boundMat, use="complete")), method="complete" )
+
+colAnnotation <- data.frame(
+    Type=ifelse( grepl("^T", colnames( boundMat ) ), "Tumor", "Cell line"),
+    stringsAsFactors=FALSE )
+rownames( colAnnotation ) <- colnames( boundMat )
+colAnnotation$Type[grepl("^N", rownames( colAnnotation ))] <- "Normal"
+
+data(cohort_data)
+
+colAnnotation$`Cohort` <-
+    ifelse( rownames(colAnnotation) %in% cohort1Labs, "validation", "original" )
+
+annColors <- list(
+    Type = c( `Normal`="#4daf4a", `Tumor`="#984ea3", `Cell line`= "#00000090"),
+    `Cohort`=c(validation="#000000", `original`="white") )
+
+library(pheatmap)
+
+```
+
+```{r, fig.width=5, fig.height=4.5, out.width = "75%"}
+
+pheatmap( cor( boundMat, use="complete" ), show_rownames=FALSE, 
+         color=(colorRampPalette(brewer.pal(9, "Blues"), bias=1)(100)),
+         breaks=seq(0, 1, length.out=101),
+         annotation_col=colAnnotation,
+         annotation_colors=annColors,
+         annotation_names_col = FALSE,
+         cluster_cols=hcl,
+         cluster_rows=hcl,
+         treeheight_col=75,
+         treeheight_row=75)
+
+```
+
+
+```{r}
+
+boundary <- boundaryScores %>%
+    dplyr::filter( bin_num == 10, chr != "chrX" ) %>%
+    dplyr::select( sampleID, chr, pos, within_vs_cross ) %>%
+    reshape2::dcast( chr + pos ~ sampleID, value.var="within_vs_cross" )
+boundary <- boundary[,grepl("BRD|MGH", colnames( boundary ) )]
+
+boundMat <- as.matrix(boundary[,!colnames( boundary ) %in% c("chr", "pos"),])
+boundMat <- (t((t(boundMat) - colMedians( boundMat, na.rm=TRUE ))/ colMads( boundMat, na.rm=TRUE) ) )
+boundMat <- boundMat[,!duplicated(gsub("-sb", "", colnames(boundMat)))]
+
+norSamps <- grepl("N$|N-sb$", colnames(boundMat))
+
+boundary_cutoff <- qnorm(0.9)
+
+boundaryIndexes <- rowSums(boundMat[,norSamps] > boundary_cutoff, na.rm=TRUE) > 6
+xx <- table(rowSums( boundMat[boundaryIndexes,!norSamps] > qnorm(0.9), na.rm=TRUE) )
+
+```
+
+```{r, fig.height=2.5, fig.width=6, out.width = "75%"}
+
+library(ggplot2)
+library(cowplot)
+theme_set(theme_cowplot())
+
+data.frame(
+    numberOfTumors=as.numeric(names(xx)),
+    numberOfTads=as.numeric(xx) ) %>%
+    dplyr::mutate( numberOfTads=numberOfTads/sum(numberOfTads) ) %>%
+    ggplot( aes( numberOfTumors, numberOfTads ) ) +
+    geom_bar(stat="identity") +
+    labs(x="# of tumors with conserved TAD boundary region", y="Fraction of TADs")
 
 ```
