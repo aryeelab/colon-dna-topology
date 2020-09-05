@@ -22,7 +22,7 @@ library(BiocParallel)
 
 register(MulticoreParam(5))
 
-boundaryScores <- calculateBoundaryScores( allSamples, res="40000", steps=c(5, 10, 20) )
+boundaryScores <- calculateBoundaryScores( allSamples, res="40000", steps=c(5, 10, 20, 50) )
 
 save(boundaryScores, file="../data/boundaryScores.RData")
 
