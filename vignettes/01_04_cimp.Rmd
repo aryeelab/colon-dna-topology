@@ -141,7 +141,6 @@ mcols(cimpvsAllRes)$methNonCIMP <- methMean$NonCIMP
 mcols(cimpvsAllRes)$methDiff <- methMean$CIMP - methMean$NonCIMP
 #mcols(cimpvsAllRes)$NonCIMP <- mcols(cimpvsAllRes)$NonCIMP
 
-
 islandPeaks <- names(cimpvsAllIslandRes)
 
 mcols(cimpvsAllIslandRes)$methCIMP <- methMean[islandPeaks,"CIMP"]
@@ -186,7 +185,9 @@ mcols(cimpvsAllIslandRes)$dist2boundary <-
     mcols(distanceToNearest( cimpvsAllIslandRes, boundaryInfo ))$distance
 
 mcols(cimpvsAllRes)$dist2boundary <- 
-    mcols(distanceToNearest( cimpvsAllRes, boundaryInfo ))$distance
+                      mcols(distanceToNearest( cimpvsAllRes, boundaryInfo ))$distance
+
+save( cimpvsAllIslandRes, cimpvsAllRes, file="../data/ctcfCimpResults.RData" )
 
 cimpPl <- as.data.frame( cimpvsAllIslandRes ) %>%
     dplyr::filter( baseMean > 5, dist2boundary < 60000 ) %>%

@@ -7,11 +7,15 @@ abstract: "This vignette provides the code to convert the processed HiChip data 
 
 
 ```{r}
+
+##devtools::load_all()
+
 library(diffloop)
 
+
 loops <- loopsMake(
-    system.file("extdata/geodata", package="ColonDNATopology"),
-    mergegap=0)
+    file.path( Sys.getenv("EXTDATA"), "geodata" ),
+    mergegap=0 )
 
 cc <- loops@counts
 rownames(loops@colData) <- gsub(".filt.intra", "", rownames(loops@colData))

@@ -9,21 +9,80 @@ abstract: ""
 
 devtools::load_all()
 
+```
+
+```{r}
+
 allSamples <- list.files(
     system.file("data", package="ColonDNATopology"),
     pattern="^hic" )
-#allSamples <- allSamples[grepl("BRD|MGH", basename( allSamples ))]
+
+##allSamples <- allSamples[grepl("BRD|MGH", basename( allSamples ))]
 allSamples <- gsub("hic_|.RData", "", basename( allSamples ))
 
+library(GenomicRanges)
 library(sparseHiC)
 library(BiocParallel)
 
 #source("../R/boundaryScore.R")
 
 register(MulticoreParam(5))
-
 boundaryScores <- calculateBoundaryScores( allSamples, res="40000", steps=c(5, 10, 20, 50) )
-
 save(boundaryScores, file="../data/boundaryScores.RData")
+
+```
+
+```{r}
+##source("support/compartmentsTCGA.R")
+##source("support/countHiCReads.R")
+
+library(GenomicRanges)
+library(BSgenome)
+
+bins <- getCompBinning(res=10000)
+
+data(convergentLoops)
+motifs <- convergentLoops
+motifs <- unique( motifs[,c("chr1", "chr2", "motif_x1", "motif_x2", "motif_y1", "motif_y2")] )
+motifs <- motifs[motifs$chr1 != "chrX",]
+ctcfLoopsLeft <- with( motifs, GRanges( chr1, IRanges( motif_x1, motif_x2 ) ) )
+ctcfLoopsRight <- with( motifs, GRanges( chr1, IRanges( motif_y1, motif_y2 ) ) )
+loopID <- sprintf("loop%.6d", seq_len( length( ctcfLoopsLeft ) ) )
+names( ctcfLoopsLeft ) <- loopID
+names( ctcfLoopsRight ) <- loopID
+discard <- countOverlaps( ctcfLoopsLeft, bins ) > 1 | countOverlaps( ctcfLoopsRight, bins ) > 1
+ctcfLoopsLeft <- ctcfLoopsLeft[!discard]
+ctcfLoopsRight <- ctcfLoopsRight[!discard]
+keepChr <- unique( as.character( seqnames( bins ) ) )
+
+allInteractFiles <-
+    list.files(file.path(Sys.getenv("EXTDATA"), "geodata"),
+           pattern="allValidPairs.gz", full.names=TRUE )
+names( allInteractFiles ) <- gsub("_allValidPairs.gz|_hic_allValidPairs.gz", "", basename( allInteractFiles ))
+
+data(cohort_data)
+
+allInteractFiles <- allInteractFiles[names(allInteractFiles) %in% cohort1IDs]
+
+samp <- names(allInteractFiles)
+allPos <- expand.grid( samp, keepChr )
+allPos <- allPos[order(allPos$Var1),]
+
+library(data.table)
+library(magrittr)
+
+loopData <- bplapply(
+    seq_len(nrow(allPos)),
+    function( i, bins, allPos, allInteractFiles, ctcfLoopsLeft, ctcfLoopsRight ){
+        x <- as.character(allPos[i,1])
+        keepChr <- as.character(allPos[i,2])
+##        countHicInRegions( allInteractFiles[1], bins, chunkSize=50000000, summarizedFile=FALSE, keepChr=keepChr )
+        getLoopData( x, bins, keepChr=keepChr, allInteractFiles, ctcfLoopsLeft, ctcfLoopsRight )
+    }, bins=bins, allPos=allPos, allInteractFiles=allInteractFiles,
+    ctcfLoopsLeft, ctcfLoopsRight,BPPARAM=SerialParam() )
+
+loopData <- do.call(rbind, loopData)
+
+save( loopData, file="../data/loopData.RData" )
 
 ```

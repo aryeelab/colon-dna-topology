@@ -16,18 +16,19 @@ library(BiocParallel)
 ```{r, eval=FALSE}
 
 interactionFiles <- list.files(
-    system.file("extdata/geodata", package="ColonDNATopology"),
-    pattern="iced.matrix.gz", full.names=TRUE)
+    file.path( Sys.getenv("EXTDATA"), "geodata" ),
+##    system.file("extdata/geodata", package="ColonDNATopology"),
+    pattern="iced.matrix.gz", full.names=TRUE )
 
 allHicSamples <- unique(gsub("_100000_iced.matrix.gz|_40000_iced.matrix.gz", "",
      basename(interactionFiles)))
 
-
-bedFiles <- system.file("extdata/geodata", package="ColonDNATopology")
+bedFiles <- file.path(Sys.getenv("EXTDATA"), "geodata")
 bedFiles <- list.files(bedFiles, "bin.*bed$")
 bedFiles <- file.path(
-    system.file("extdata/geodata", package="ColonDNATopology"),
+    file.path(Sys.getenv("EXTDATA"), "geodata"),
     bedFiles )
+
 stopifnot(all( file.exists( bedFiles ) ) )
 
 for( sample in allHicSamples ){
@@ -40,7 +41,8 @@ for( sample in allHicSamples ){
     resolutions <- c( "40000", "100000" )
     interFiles <- sprintf("%s_%s_iced.matrix.gz", sample, resolutions)
     interFiles <- file.path(
-        system.file("extdata/geodata", package="ColonDNATopology"),
+        file.path(Sys.getenv("EXTDATA"), "geodata"),
+        ##system.file("extdata/geodata", package="ColonDNATopology"),
         interFiles )
     stopifnot(all( file.exists( interFiles ) ) )
     hic <- import.HiCPro(
@@ -122,8 +124,7 @@ data(dsdWi38)
 library(rtracklayer)
 
 gtf <- import(
-    file.path(system.file("extdata", "annotation", package="ColonDNATopology"),
-              "gencode.v30lift37.annotation.gtf.gz"))
+    file.path( Sys.getenv("EXTDATA"), "annotation", "gencode.v30lift37.annotation.gtf.gz"))
 ptg <- unique( gtf$gene_name[gtf$gene_type == "protein_coding"] )
 
 dsdWi38 <- dsdWi38[,colData(dsdWi38)$heatStress == "no" & colData(dsdWi38)$brd4 == "none"]

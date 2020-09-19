@@ -38,7 +38,7 @@ names( promoters ) <- nms
 strand( promoters ) <- "*"
 mcols(promoters)$gene <- nms
 
-enhancers <-bedToGRanges( system.file( "extdata/bed/union_K27Ac_peaks.bed",  package="ColonDNATopology") )
+enhancers <-bedToGRanges( file.path(Sys.getenv("EXTDATA"), "bed", "union_K27Ac_peaks.bed") )
 
 enhancers <- padGRanges( enhancers, pad = 1000 )
 loopsAll <- mangoCorrection( loopsAll )

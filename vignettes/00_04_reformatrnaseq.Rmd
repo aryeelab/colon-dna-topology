@@ -11,7 +11,8 @@ library(tximport)
 library(rtracklayer)
 
 salmonFiles <- list.files(
-  system.file("extdata", "geodata", package="ColonDNATopology"),
+##  system.file("extdata", "geodata", package="ColonDNATopology"),
+  file.path(Sys.getenv("EXTDATA"), "geodata"),
   pattern="sf.gz$", full.names=TRUE)
 
 df <- data.frame(
@@ -19,9 +20,7 @@ df <- data.frame(
 df$cell <- gsub("-\\d*$", "", df$sampleID)
 df$quantFile <- salmonFiles
 
-gtf <- import(
-    file.path(system.file("extdata", "annotation", package="ColonDNATopology"),
-              "gencode.v30lift37.annotation.gtf.gz"))
+gtf <- import( file.path(Sys.getenv("EXTDATA"), "annotation", "gencode.v30lift37.annotation.gtf.gz") )
 
 ##dsdOld <- readRDS("/data/aryee/bernstein/rnaseq/SummarizedData/counts/dsdCL.rds")
 

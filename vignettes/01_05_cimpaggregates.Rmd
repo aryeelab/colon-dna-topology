@@ -1,0 +1,205 @@
+---
+title: "Plot loop aggregates for CIMP tumors"
+output: html_document
+abstract: ""
+---
+
+## Reformating data
+
+```{r}
+
+devtools::load_all()
+
+data("convergentLoops")
+data("loopData")
+data("ctcfCimpResults")
+data("cgi")
+
+cgi_shore <- c(flank(cgi, width = 2000, start=TRUE),
+               flank(cgi, width = 2000, start=FALSE))
+
+bins <- getCompBinning(res=10000)
+
+motifs <- convergentLoops
+motifs <- unique( motifs[,c("chr1", "chr2", "motif_x1", "motif_x2", "motif_y1", "motif_y2")] )
+motifs <- motifs[motifs$chr1 != "chrX",]
+ctcfLoopsLeft <- with( motifs, GRanges( chr1, IRanges( motif_x1, motif_x2 ) ) )
+ctcfLoopsRight <- with( motifs, GRanges( chr1, IRanges( motif_y1, motif_y2 ) ) )
+loopID <- sprintf("loop%.6d", seq_len( length( ctcfLoopsLeft ) ) )
+names( ctcfLoopsLeft ) <- loopID
+names( ctcfLoopsRight ) <- loopID
+discard <- countOverlaps( ctcfLoopsLeft, bins ) > 1 | countOverlaps( ctcfLoopsRight, bins ) > 1
+ctcfLoopsLeft <- ctcfLoopsLeft[!discard]
+ctcfLoopsRight <- ctcfLoopsRight[!discard]
+keepChr <- unique( as.character( seqnames( bins ) ) )
+
+
+library(gridExtra)
+library(ggpubr)
+keepLoops <- names(ctcfLoopsRight[which( end( ctcfLoopsRight ) - start( ctcfLoopsLeft ) > 100000 )])
+
+cimpResR <- cimpvsAllRes
+ctcfChangesSub2 <- subsetByOverlaps( cimpResR, c(cgi, cgi_shore) )
+#ctcfChangesSub2 <- cimpResR
+ctcfChangesSub2$padj <- p.adjust( ctcfChangesSub2$pvalue, method="BH" )
+ctcfChangesSub2 <-
+    ctcfChangesSub2[which( (ctcfChangesSub2$padj < 0.15) &
+                    ctcfChangesSub2$methDiff > 0.1 &
+                    mcols( ctcfChangesSub2 )$log2FoldChange < 0 )]
+overRight <- subjectHits(findOverlaps( ctcfChangesSub2, ctcfLoopsRight ))
+overLeft <- subjectHits(findOverlaps( ctcfChangesSub2, ctcfLoopsLeft ))
+disruptedLoops3 <-
+    unique( c( names(ctcfLoopsRight)[overLeft],
+              names(ctcfLoopsLeft)[overRight] ) )
+
+
+levs <- unique( loopData$sample )
+levs <- c( levs[!grepl("N$", levs)], levs[grepl("N$", levs)] )
+
+groupSamples <- ifelse( levs %in% c("BRD3162", "BRD3179"), "CIMP",
+                ifelse( grepl("N$", levs), "Normal", "Non-CIMP" ) )
+names( groupSamples ) <- levs
+
+
+
+```
+
+```{r, fig.height=2.5, fig.width=4.5}
+
+library(RColorBrewer)
+library(cowplot)
+
+## png("../output/plots/heatmap_disruptedLoopsCIMP3.png", height=2.5, width=4.5, unit="in", res=300)
+pp <- plotLoopAggregate( loopData, keepLoops, disruptedLoops3, bias=0.75,
+                        levs=levs, groupSamples, maxVal=4, furtherLevs=c("Normal", "Non-CIMP", "CIMP"),
+                        zlim=2.05 ) +
+    theme( axis.text=element_blank(), axis.ticks=element_blank(),
+          axis.line=element_blank() ) +
+    labs(x="", y="", fill="HiC score") + panel_border(colour="black") +
+    scale_fill_gradientn(
+        colors=( colorRampPalette( brewer.pal(9, "Reds"), bias=0.48 )(100)),
+        na.value="grey50" )
+print(pp)
+## dev.off()
+
+```
+
+## Loops crossing boundaries
+
+```{r}
+
+data("loopsAll_hichipper2")
+data("promoters_per_transcript")
+
+regions2 <- loops@anchors
+names( regions2 ) <- sprintf("anchors%0.6d", seq_len( length(regions2 ) ) )
+
+ovl <- findOverlaps( regions2, promoters )
+
+ovlSp <- split( names(promoters)[subjectHits( ovl )], names(regions2)[queryHits(ovl)] )
+ovlSp <- as( ovlSp, "SimpleList" )
+mcols( regions2 )$genes <- SimpleList(NULL)
+regions2[names(ovlSp)]$genes <- ovlSp
+
+
+cnts <- loops@counts
+colnames( cnts ) <- gsub(".filt.intra", "", colnames( cnts ))
+
+hicDsdHichipper <- DESeqDataSetFromMatrix(
+    countData = cnts,
+    colData = data.frame(
+        sample = colnames(cnts),
+        groups = ifelse( colnames(cnts) %in% c("BRD3162", "BRD3179"), "CIMP", "NonCIMP" ) ),
+    design = ~groups )
+
+rownames( hicDsdHichipper ) <- NULL
+rowData(hicDsdHichipper)$first <- loops@interactions[,"left"]
+rowData(hicDsdHichipper)$second <- loops@interactions[,"right"]
+kp <- rowSums( counts( hicDsdHichipper ) ) > 25
+hicDsdHichipper <- hicDsdHichipper[kp,]
+
+library(limma)
+library(fdrtool)
+hicDsdHichipper <- getDESeqRes( NULL, NULL, hicDsdHichipper, thr=0, thr2=1, normalizeTrend=TRUE )
+rowData( hicDsdHichipper )$padj <- loops@rowData$FDR[kp]
+
+
+formatRes <- function( hicDsd, regions ){
+    tmp <- as.data.frame(rowData(hicDsd))
+    rowRanges(hicDsd) <- 
+        GRanges(
+            as.character(seqnames(regions[rowData(hicDsd)$first])),
+            IRanges(
+                start=end(regions[rowData(hicDsd)$first]),
+                end=start(regions[rowData(hicDsd)$second]) ) )
+    rowData(hicDsd) <- tmp
+    hicDsd
+}
+
+hicDsdHichipper <- formatRes( hicDsdHichipper, regions2 )
+
+cimpResR <- cimpvsAllRes
+ctcfChanges <-
+    cimpResR[which(mcols( cimpResR )$padj < 0.5 &
+                                    mcols( cimpResR )$methDiff > 0.1 & 
+                                    mcols( cimpResR )$log2FoldChange < 0)]
+
+disrLeft <- subjectHits( findOverlaps( ctcfChanges, ctcfLoopsLeft ) )
+disrRight <- subjectHits( findOverlaps( ctcfChanges, ctcfLoopsRight ) )
+
+rowRanges(hicDsdHichipper)$genes.first <- regions2$genes[rowRanges( hicDsdHichipper )$first]
+rowRanges(hicDsdHichipper)$genes.second <- regions2$genes[rowRanges( hicDsdHichipper )$second]
+
+
+```
+
+```{r}
+data(cohort_data)
+data(boundaryScores)
+
+boundary_cutoff <- qnorm(0.9)
+
+#boundaries2 <- dplyr::ungroup(readRDS("/data/aryee/bernstein/hic/SummarizedData/TADs/boundary_scores.rds"))
+#boundaries2 <- unique( as.data.frame( boundaries2 )[,c("chr", "pos")] )
+
+boundaries <- boundaryScores %>%
+    dplyr::filter( bin_num %in% c(10, 20, 50) ) %>%
+    dplyr::filter( sampleID %in% cohort1IDs ) %>%
+    dplyr::group_by( bin_num, sampleID ) %>%
+    dplyr::mutate( norm=(within_vs_cross-median(within_vs_cross))/mad(within_vs_cross) ) %>%
+    dplyr::filter( norm > boundary_cutoff ) %>%
+    dplyr::group_by( chr, pos ) %>%
+    dplyr::mutate( norm_max=max(norm) ) %>%
+    dplyr::select( chr, pos, norm_max ) %>%
+    dplyr::ungroup()
+
+boundaries$regionIdx <- cumsum(c(TRUE, diff(boundaries$pos)>2*40000)) 
+
+boundaries <- boundaries %>%
+    dplyr::group_by(regionIdx) %>%
+    dplyr::top_n(1, norm_max)
+
+boundaryInfo <- GRanges( boundaries$chr, IRanges(boundaries$pos, boundaries$pos))
+```
+
+```{r, fig.width=1.8, fig.height=2.5}
+
+crossing <- unique(subjectHits(findOverlaps( boundaryInfo, rowRanges(hicDsdHichipper) )))
+xx <- findOverlaps( ctcfChanges[ctcfChanges$dist2boundary < 50000], rowRanges(hicDsdHichipper)[crossing], type="within" )
+
+rowRanges( hicDsdHichipper )[crossing] %>%
+    as.data.frame( ) %>%
+    dplyr::mutate(
+               group = factor(
+                   ifelse( seq_len(length(hicDsdHichipper[crossing])) %in% subjectHits( xx ),
+                              "Lost", "Stable" ), levels=c("Stable", "Lost") ) ) %>%
+    dplyr::filter( baseMean > 3.5 ) %>%
+    dplyr::mutate( log2FoldChange = log2FoldChange - median( log2FoldChange ) ) %>%
+    ggplot(aes( group, log2FoldChange )) +
+    geom_boxplot( outlier.shape=NA ) +
+    geom_hline( yintercept=0, col="darkred", size=1.1, alpha=0.4 ) +
+    ylim( -1.8, 1.8 ) +
+    labs( x="", y="Cross-boundary\nE-P contacts\n(CIMP/Non-CIMP)" ) +
+    theme( axis.text.x=element_text(angle=35, hjust=1) )
+
+```

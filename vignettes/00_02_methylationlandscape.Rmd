@@ -13,8 +13,8 @@ library(readr)
 library(BiocParallel)
 
 cpgFiles <- list.files(
-  system.file("extdata", "geodata", package="ColonDNATopology"), 
-  pattern="cpg.gz", full.names=TRUE)
+    file.path(Sys.getenv("EXTDATA"), "geodata"),
+    pattern="cpg.gz", full.names=TRUE)
 
 ##cpgFiles <- cpgFiles[!grepl("wi", basename(cpgFiles))]
 ##cpgFiles <- cpgFiles[grepl("wi", basename(cpgFiles))]
