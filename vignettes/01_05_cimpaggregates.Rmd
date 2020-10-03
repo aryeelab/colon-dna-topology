@@ -154,6 +154,7 @@ rowRanges(hicDsdHichipper)$genes.second <- regions2$genes[rowRanges( hicDsdHichi
 ```
 
 ```{r}
+
 data(cohort_data)
 data(boundaryScores)
 
@@ -180,6 +181,7 @@ boundaries <- boundaries %>%
     dplyr::top_n(1, norm_max)
 
 boundaryInfo <- GRanges( boundaries$chr, IRanges(boundaries$pos, boundaries$pos))
+
 ```
 
 ```{r, fig.width=1.8, fig.height=2.5}
@@ -201,5 +203,59 @@ rowRanges( hicDsdHichipper )[crossing] %>%
     ylim( -1.8, 1.8 ) +
     labs( x="", y="Cross-boundary\nE-P contacts\n(CIMP/Non-CIMP)" ) +
     theme( axis.text.x=element_text(angle=35, hjust=1) )
+
+```
+
+
+```{r}
+
+data(dds)
+dds <- dds[,grepl("BRD|MGH", colData(dds)$sampleID)]
+colData(dds) <- droplevels(colData(dds))
+
+colData(dds)$condition <- factor(ifelse(colData(dds)$sampleID %in% c("BRD3162", "BRD3179"), "CIMP", "NonCIMP"))
+design( dds ) <- ~ condition
+dds <- estimateSizeFactors( dds )
+dds <- DESeq( dds )
+resDat <- as.data.frame( results( dds, contrast=c("condition", "CIMP", "NonCIMP") ) )
+
+frstGn <- rowRanges( hicDsdHichipper )[crossing] %>%
+    as.data.frame( ) %>%
+    dplyr::mutate(
+               group = factor(
+                   ifelse( seq_len(length(hicDsdHichipper[crossing])) %in% subjectHits( xx ),
+                          "Lost", "Stable" ), levels=c("Stable", "Lost") ) ) %>%
+    dplyr::select( genes.first, group ) %>%
+    tidyr::unnest( cols=c(genes.first) ) %>%
+    dplyr::rename( gene=genes.first )
+
+scndGn <- rowRanges( hicDsdHichipper )[crossing] %>%
+    as.data.frame( ) %>%
+    dplyr::mutate(
+               group = factor(
+                   ifelse( seq_len(length(hicDsdHichipper[crossing])) %in% subjectHits( xx ),
+                          "Lost", "Stable" ), levels=c("Stable", "Lost") ) ) %>%
+    dplyr::select( genes.second, group ) %>%
+    tidyr::unnest( cols=c(genes.second) ) %>%
+    dplyr::rename( gene=genes.second )
+
+gns <- rbind( frstGn, scndGn )
+gns <- unique(gns)
+
+resDat$gene <- rownames( resDat )
+gns <- dplyr::left_join( gns, resDat[,c("log2FoldChange", "gene")] )
+```
+
+
+```{r, fig.height=4, fig.width=4}
+
+gns %>%
+    dplyr::filter( group == "Lost" ) %>%
+    dplyr::arrange( desc(log2FoldChange ))
+
+gns %>%
+    ggplot( aes( group, log2FoldChange ) ) +
+    geom_boxplot() + #ylim(-2, 2) +
+    geom_hline(yintercept=0, col="red", lwd=1)
 
 ```
