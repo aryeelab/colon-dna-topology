@@ -1,0 +1,220 @@
+---
+title: "Genome view plots of multi-omics data"
+output: html_document
+abstract: ""
+---
+
+
+```{r}
+
+devtools::load_all()
+
+tumorSamples <- c("BRD3179", "BRD3162", "BRD3162",
+                  "MGH8416", "BRD3187", "BRD3179")
+normalSamples <- c("BRD3179N", "BRD3179N","BRD3179N",
+                   "BRD3170N", "BRD3179N", "BRD3179N" )
+data(allABRatios_10K)
+data(hansen)
+
+library(ensembldb)
+
+## for paper ##
+bb <- GRanges("chr17", IRanges( 49378158, 52975694 ) )
+bb <- GenomicRanges::resize( bb, 5000000, fix="center" )
+hl <- subsetByOverlaps( blocks, bb, type="within" )
+#bb <- resize( bb, 7000000 )
+
+scaleCols <- c("#984ea3", "#4daf4a")
+names( scaleCols ) <- c("Cancer", "Normal")
+
+library(ggplot2)
+library(cowplot)
+theme_set(theme_cowplot())
+
+rmtheme <- theme(legend.pos="none",
+                 axis.text.x=element_blank(),
+                 axis.title.x=element_blank(),
+                 plot.margin = unit(c(0, 0, 0, 0), "cm"))
+
+library(GenomeMatrix)
+
+fig2Bhic <- plotHiCProfileForSample( tumorSamples[1], res="40000", bb,
+                              heightProp=.39, #zlim=20,
+                              colorBias=1, autoZlim=0.995,
+                              highlight=hl,
+                              colRamp="Reds",
+                              colPalette=brewer.pal(9, "Reds")[1:6],
+                              extend=.6 )
+
+fig2Bhic <- fig2Bhic + theme(axis.ticks.y=element_blank()) + rmtheme
+
+fig2Bmeth <- plotMethBins(
+    hansen,
+    bb, extend=0, binSize=12000,
+    grp=colData(hansen)$type,
+    iter=3, typeMeth="raw", highlight=hl ) +
+    scale_color_manual(values=scaleCols) +
+    scale_x_continuous(labels=function(x){round(x/1000000, 2)}) +
+    xlab("Genome (Mb)") + ylab("DNAme") +
+    theme(legend.pos="none") +
+    scale_y_continuous(labels=function(x){round(x, 1)}, breaks=c(0.5, 1), limits=c(0.3, 1))
+
+library(magrittr)
+
+fig2BAB <- plotCompartmentHeatmap( wholeGenome, scoreMatNorm[,tumorSamples[6]],
+                                  bb, bias=0.85 ) + rmtheme
+library(ggpubr)
+
+pl <- ggarrange(
+    fig2Bhic, fig2BAB, fig2Bmeth, nrow=3,
+    align="v", heights=c(1.35, 0.4, 1.9) )
+pl <- annotate_figure(
+    pl,
+    top = text_grob(sprintf("%0.1f Mb", round(width(hl)/1000000, 1)),
+                    hjust = -0.2,
+                    vjust=1.6,
+                    size = 10))
+```
+
+```{r, fig.height=2.8, fig.width=2.8}
+##png("../output/plots/allTracks2B_large.png", height=2.8, width=2.8, unit="in", res=300)
+print(pl)
+##dev.off()
+```
+
+```{r, fig.height=2.8, fig.width=2.8}
+
+cn <- GRanges( "chr7", IRanges(1610044, 1850462) )
+bb <- GenomicRanges::resize( cn, 400000, fix="center" )
+hl <- subsetByOverlaps( blocks, bb, type="within" )
+
+library(EBImage)
+
+w = makeBrush(size = 5, shape = 'gaussian', sigma = 3)
+
+fig2Chic <- plotHiCProfileForSample( tumorSamples[1], res="40000", bb,
+                              heightProp=.39, #zlim=50,
+                              colorBias=0.9,
+                              highlight=hl,
+                              colRamp="YlOrBr",
+                              autoZlim=1,
+                              colPalette=brewer.pal(9, "Reds")[1:6],
+                              extend=.5,
+                              smoothFilt=function(x){ filter2( x, w ) } )
+
+fig2Chic <- fig2Chic + theme(axis.ticks.y=element_blank()) + rmtheme
+
+fig2Bmeth <- plotMethBins(
+    hansen,
+    bb, extend=0, binSize=5000,
+    grp=colData(hansen)$type,
+    iter=2, typeMeth="raw", highlight=hl ) +
+    scale_color_manual(values=scaleCols) +
+    scale_x_continuous(labels=function(x){round(x/1000000, 2)}) +
+    xlab("Genome (Mb)") + ylab("DNAme") +
+    theme(legend.pos="none") +
+    scale_y_continuous(labels=function(x){round(x, 1)}, breaks=c(0.5, 1), limits=c(0.3, 1))
+
+fig2BAB <- plotCompartmentHeatmap(
+    wholeGenome,
+    scoreMatNorm[,tumorSamples[6]],
+    bb ) + rmtheme
+
+pl <- ggarrange( fig2Chic, fig2BAB, fig2Bmeth, nrow=3,
+          align="v", heights=c(1.35, 0.4, 1.9) )
+pl <- annotate_figure(
+    pl,
+    top = text_grob(sprintf("%0.1f Mb", round(width(hl)/1000000, 1)),
+                    hjust = -0.2,
+                    vjust= 1.6,
+                    size = 10))
+
+print(pl)
+
+detach("package:EBImage")
+
+```
+
+```{r}
+
+data(blocks)
+data(chipSamples)
+
+goodK27me3 <- c("BRD3179N", "BRD3187N", "BRD3170N", "BRD3187", "MGH8416", "BRD3462", "BRD3162")
+goodK9me3 <- c("BRD3170N", "BRD3187N", "MGH2834", "MGH8416")
+
+cn <- blocks[which( width(blocks) > 600000 & distanceToNearest(blocks)@elementMetadata$distance > 300000)]
+sampsMult <- c( "BRD3179N", "BRD3162", "BRD3179N", "BRD3187", "BRD3170N", "MGH8416" )
+prot <- c( "K27Ac", "K27Ac", "K27me3", "K27me3", "K9me3", "K9me3" )
+#sampsMult <- c( "BRD3179N", "BRD3187", "BRD3170N", "MGH8416", "BRD3179N", "BRD3162" )
+#prot <- c( "K27me3", "K27me3", "K9me3", "K9me3", "K27Ac", "K27Ac" )
+readNums <- chipSamples[paste(sampsMult, prot, sep="-"),"ReadNumber"]
+normFacs <- readNums/10000000
+holes <- gaps( blocks )
+holes <- holes[strand( holes ) == "*"]
+
+bb <- GRanges( "chr4", IRanges(6200000, 8600000) )
+cn2 <- subsetByOverlaps(blocks, bb)
+
+library(rtracklayer)
+library(GenomicAlignments)
+
+##file.path(Sys.getenv("EXTDATA"), "geodata")
+subCompVec <- ifelse( scoreMatNorm[,1] > 0 , "A", "B" )
+
+subCompVec[subCompVec == "A" & seq_len( length( wholeGenome ) ) %in%
+           queryHits( findOverlaps( wholeGenome, blocks ) )] <- "I"
+
+normFacs <- normFacs/c(3, 3, 10, 10, 10, 10)
+
+pl <- plotMultChipsWithMeth2( sampsMult, prot, bb, cn2,
+                            normFacs, 
+                            brks=list(c(0, 20), c(0, 20), c(0, 10), c(0, 10), c(0, 5), c(0, 5)),
+                            ylims=list(c(0, 30), c(0, 30), c(0, 12), c(0, 12), c(0, 6), c(0, 6)) )
+
+```
+
+```{r, fig.height=4, fig.width=3}
+print(pl)
+```
+
+```{r}
+
+bb <- GRanges( "chr6", IRanges( 113882069, 116682068 ) )
+end(bb) <- end(bb) - 150000
+start(bb) <- start(bb) + 100000
+
+cn2 <- subsetByOverlaps(blocks, bb)[1]
+
+pl <- plotMultChipsWithMeth2( sampsMult, prot, bb, cn2,
+                            normFacs,
+                            brks=list(c(0, 20), c(0, 20), c(0, 10), c(0, 10), c(0, 5), c(0, 5)),
+                            ylims=list(c(0, 30), c(0, 30), c(0, 12), c(0, 12), c(0, 6), c(0, 6)) )
+```
+
+```{r, fig.height=4, fig.width=3}
+#pdf("prueba.pdf",height=4, width=3)
+print(pl)
+#dev.off()
+```
+
+
+```{r}
+
+bb <- GRanges("chr20", IRanges(30200000, 33100000))
+start(bb) <- start(bb) + 50000
+cn2 <- subsetByOverlaps(blocks, bb)
+pl <- plotMultChipsWithMeth2(
+    sampsMult, prot, bb, cn2,
+    normFacs,
+    brks=list(c(0, 20), c(0, 20), c(0, 10), c(0, 10), c(0, 5), c(0, 5)),
+    ylims=list(c(0, 30), c(0, 30), c(0, 12), c(0, 12), c(0, 6), c(0, 6)) )
+```
+
+```{r, fig.height=4, fig.width=3}
+
+## pdf("prueba.pdf", height=4, width=3)
+print(pl)
+## dev.off()
+
+```

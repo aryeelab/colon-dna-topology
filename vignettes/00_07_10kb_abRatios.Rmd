@@ -1,0 +1,110 @@
+---
+title: "HiC 10Kb A/B ratios"
+output: html_document
+abstract: ""
+---
+
+
+```{r}
+devtools::load_all()
+```
+
+
+```{r}
+
+allInteractFiles <- list.files(
+    file.path( Sys.getenv("EXTDATA"), "geodata" ),
+    pattern="_allValidPairs.gz", full.names=TRUE )
+names( allInteractFiles ) <- gsub("_hic_allValidPairs.gz|_allValidPairs.gz", "", basename( allInteractFiles ))
+
+data(compartmentGR)
+
+library(BSgenome.Hsapiens.UCSC.hg19)
+seqLengths <- seqlengths( BSgenome.Hsapiens.UCSC.hg19 )
+seqLengths <- seqLengths[1:23]
+
+wholeGenome <- getCompBinning( res=10000, names(seqLengths) )
+names(wholeGenome) <- sprintf("bin%.6d", seq_len( length( wholeGenome ) ) )
+
+compSub <- compartmentGR[seqnames(compartmentGR) %in% names(seqLengths),]
+
+compVec <- mcols(compartmentGR)[,grepl("_mean_eigen", colnames(mcols(compartmentGR)))]
+colnames(compVec) <- gsub("_mean_eigen", "", colnames(compVec))
+colnames(compVec) <- gsub("\\.", "-", colnames(compVec))
+
+allInteractFiles <- allInteractFiles[grepl("BRD|MGH", names(allInteractFiles))]
+
+x <- names( allInteractFiles )
+
+all(gsub("-rep\\d$|Rep\\d$", "", gsub("\\.", "-", gsub("-", "\\.", gsub("-\\d$", "", x)))) %in% colnames( compVec ))
+
+keepChr <- names(seqLengths)
+
+library(BiocParallel)
+library(data.table)
+library(magrittr)
+library(ggplot2)
+library(tidyr)
+library(genefilter)
+library(reshape2)
+
+allSampleRatios <- bplapply(
+    names( allInteractFiles ),
+    function( x, allInteractFiles, wholeGenome, compSub, compVec, keepChr ){
+        cat( sprintf("Processing sample %s\n", x ) )
+        ## source("/data/aryee/areyes/GB/glioma_topology/code/support/countHiCReads.R")
+        ## sp <- gsub("-", "\\.", gsub("-\\d$", "", x))
+        sp <- gsub("-rep\\d$|Rep\\d$", "", gsub("\\.", "-", gsub("-", "\\.", gsub("-\\d$", "", x))))
+        rt <- abRatio2( allInteractFiles[x], wholeGenome, compSub, compVec[,sp], keepChr )
+        rt$sample <- x
+        rt
+    }, #BPPARAM=bjp,
+    BPPARAM=SnowParam(1, tasks=length(allInteractFiles)),
+    allInteractFiles=allInteractFiles,
+    wholeGenome=wholeGenome,
+    compSub=compSub,
+    compVec=compVec, keepChr=keepChr )
+
+names( allSampleRatios ) <- names( allInteractFiles )
+allSampleRatios <- lapply( names(allSampleRatios), function(x){
+    allSampleRatios[[x]]$binID <- rownames( allSampleRatios[[x]] )
+    allSampleRatios[[x]]
+})
+allSampleRatios <- do.call( rbind, allSampleRatios )
+
+scoreMat <- spread( allSampleRatios[,c("binID", "abRatio", "sample")], key=sample, value=abRatio )
+rownames( scoreMat ) <- scoreMat$binID
+scoreMat <- scoreMat %>% dplyr::select( -binID )
+scoreMatRaw <- scoreMat
+
+scoreMat <- scoreMat[,grep("BRD|MGH", colnames( scoreMat ))]
+scoreMat <- t(t( scoreMat ) - apply( scoreMat, 2, median ))
+
+library(preprocessCore)
+
+scoreMatNorm <- normalize.quantiles( as.matrix( scoreMat ) )
+rownames( scoreMatNorm ) <- rownames( scoreMat )
+colnames( scoreMatNorm ) <- colnames( scoreMat )
+
+scoreMatLong <- melt( scoreMatNorm, value.name="abRatioNorm",
+                     varnames=c("binID", "sample") )
+scoreMatLong$sample <- as.character( scoreMatLong$sample )
+scoreMatLong$binID <- as.character( scoreMatLong$binID )
+
+scoreMatRawLong <- melt( as.matrix(scoreMatRaw), value.name="abRatioRaw",
+                        varnames=c("binID", "sample") )
+scoreMatRawLong$sample <- as.character( scoreMatRawLong$sample )
+scoreMatRawLong$binID <- as.character( scoreMatRawLong$binID )
+
+allSampleRatiosRaw <- allSampleRatios
+allSampleRatios <- dplyr::left_join( allSampleRatiosRaw, scoreMatRawLong, by=c("sample", "binID") )
+allSampleRatios <- dplyr::left_join( allSampleRatios, scoreMatLong, by=c("sample", "binID") )
+
+allSampleRatios <- allSampleRatios %>%
+    dplyr::select( binID, sample, A, B, abRatio, abRatioNorm )
+
+##save( wholeGenome, allSampleRatios, scoreMat, scoreMatNorm, scoreMatRaw,
+##     file="../data/allABRatios_10K.RData" )
+
+
+```

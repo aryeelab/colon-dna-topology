@@ -133,7 +133,7 @@ plotCoverage2 <- function( bamDir, plot_gr, sizeFactors=NULL, fun=function(x){x}
 plotCovProfileForSample <- function(
     sampleName, protein,
     plotGr,
-    bamPaths=system.file("extdata/geodata", package="ColonDNATopology"),
+    bamPaths=file.path(Sys.getenv("EXTDATA"), "geodata"),
     suffix=".bw", ... ){
     samples <- file.path( bamPaths,
                           paste0( paste( sampleName, protein, sep="-"), suffix ) )
@@ -458,9 +458,9 @@ plotChipsWithMeth <- function( samps, prot, coors, hl, normFacs, brks=c(0, 10, 2
                                          itersmooth=1,
                                          sizeFactors=y,
                                          highlight=hl,
-                                         bamPath="/data/aryee/bernstein/chip/SummarizedData/bam",
-                                         suffix=".bam",
-                                         sampleGroups=l) + #ylim(0, 25) +
+                                         bamPath=file.path(Sys.getenv("EXTDATA"), "geodata"),
+                                         suffix=".bw",
+                                         sampleGroups=l ) + #ylim(0, 25) +
                 geom_area(aes(fill=sampleGroups)) +
                 theme(legend.pos="none")
             p <- p +
@@ -475,7 +475,7 @@ plotChipsWithMeth <- function( samps, prot, coors, hl, normFacs, brks=c(0, 10, 2
         hansen,
         coors, extend=0, binSize=5000,
         grp=colData(hansen)$type,
-        iter=2, typeMeth="raw", highlight=cn2 ) +
+        iter=2, typeMeth="raw", highlight=hl ) +
         scale_color_manual(values=scaleCols) +
         rmtheme +
         ylab("Meth.") +
@@ -545,7 +545,9 @@ plotMultChipsWithMeth <- function( samps, prot, coors, hl, normFacs, brks=c(0, 1
         allP[[4]] + rmtheme,
         allP[[5]] + rmtheme,
         allP[[6]] + theme(legend.pos="none") +
-        scale_x_continuous(labels=function(x){round(x/1000000, 2)}) +
+        scale_x_continuous(
+            labels=function(x){round(x/1000000, 2)},
+            limits=c(start(coors), end(coors)) ) +
         theme(plot.margin = unit(c(0.2, 0, 0.5, 0), "cm") ) +
         xlab("Genome (Mb)"),
         align="v", nrow=7, heights=c(1, .8, .8, .8, .8, .8, 2.1) )
@@ -572,8 +574,8 @@ plotMultChipsWithMeth2 <- function( samps, prot, coors, hl, normFacs, brks=c(0, 
                                          itersmooth=1,
                                          sizeFactors=y,
                                          highlight=hl,
-                                         bamPath="/data/aryee/bernstein/chip/SummarizedData/bam",
-                                         suffix=".bam",
+                                         bamPath=file.path(Sys.getenv("EXTDATA"), "geodata"),
+                                         suffix=".bw",
                                          sampleGroups=l) + #ylim(0, 25) +
                 geom_area(aes(fill=sampleGroups)) +
                 theme(legend.pos="none")
@@ -590,7 +592,7 @@ plotMultChipsWithMeth2 <- function( samps, prot, coors, hl, normFacs, brks=c(0, 
         hansen,
         coors, extend=0, binSize=5000,
         grp=colData(hansen)$type,
-        iter=2, typeMeth="raw", highlight=cn2 ) +
+        iter=2, typeMeth="raw", highlight=hl ) +
         scale_color_manual(values=scaleCols) +
         rmtheme +
         ylab("  DNAme") +
@@ -608,7 +610,8 @@ plotMultChipsWithMeth2 <- function( samps, prot, coors, hl, normFacs, brks=c(0, 
         allP[[4]] + rmtheme,
         allP[[5]] + rmtheme,
         allP[[6]] + theme(legend.pos="none") +
-        scale_x_continuous(labels=function(x){round(x/1000000, 2)}) +
+        scale_x_continuous(labels=function(x){round(x/1000000, 2)},
+                           limits=c(start(coors), end(coors))) +
         theme(plot.margin = unit(c(0.2, 0, 0.5, 0), "cm") ) +
         xlab("Genome (Mb)"),
         align="v", nrow=8, heights=c(.5, 1, .8, .8, .8, .8, .8, 2.1) )
@@ -621,4 +624,55 @@ plotMultChipsWithMeth2 <- function( samps, prot, coors, hl, normFacs, brks=c(0, 
 #        left = text_grob( "H3K27Ac   H3K27me3    H3K9m3", size=10, rot=90, vjust=2.3 )
 #    )
     pl
+}
+
+
+plotMethBins <- function( bs, plotGr, grp=NULL, extend=NULL, what="line",
+                         binSize=5000, iter=3, typeMeth="smooth", highlight=NULL ) {
+    sampleIdx <- seq_len( ncol( bs ) )
+    if( is( plotGr, "data.frame") ){
+        plotGr <- GRanges( plotGr[,"chr"],
+                          IRanges( plotGr[,"start"], plotGr[,"end"] ) )
+    }
+    if( !is.null( extend ) ){
+        start( plotGr ) <- start( plotGr ) - extend
+        end( plotGr ) <- end( plotGr ) + extend
+    }
+    plotBins <- unlist(GenomicRanges::tile( plotGr, width=binSize ))
+    bsSub <- subsetByOverlaps(bs, plotGr)
+    mat <- as.data.frame(bsseq:::getMeth( bsSub[,sampleIdx],
+                                         plotBins, type=typeMeth,
+                                         what="perRegion" ) )
+    if( iter > 0 ){
+        for( i in colnames( mat ) ){
+            mat[[i]] <- minfi:::.meanSmoother( mat[[i]], iter=iter )
+        }
+    }
+    mat <- cbind(mat, pos=start(plotBins)+(binSize/2))
+    m <- reshape2::melt(mat, id.vars="pos", value.name="methylation", variable.name="sampleIdx")
+    if(is.null(grp)){
+        m$grp <- sub("_1", "", sub("_2", "", m$sampleIdx))
+    }else{
+        m$grp <- grp[m$sampleIdx]
+    }
+    m$y1 <- 0
+    m$y2 <- 0.02
+    p <- ggplot(m, aes(pos, methylation, group=sampleIdx, color=grp))
+    if( any( what %in% "line") ){
+        p <- p + geom_line()
+    }else if( any( what %in% "point" ) ){
+        p <- p + geom_point()
+    }
+    p <- p + ylim(0, 1)
+    if( !is.null( highlight ) ){
+        highlight <- subsetByOverlaps( highlight, plotGr )
+        p <- p + geom_vline( xintercept=c( start(highlight) ), colour="#00000095" ) +
+            geom_vline( xintercept=c( end( highlight ) ), colour="#00000095" ) +
+            xlim( start( range(highlight) ), end( range(highlight) ) ) +
+            geom_rect( data = as.data.frame( highlight ), inherit.aes=FALSE,
+                      aes( xmin=start, xmax=end, ymin=-Inf, ymax=Inf ),
+                      fill="gray", alpha=0.35 )
+    }
+    p <- p + xlim( start( plotGr ), end( plotGr ) )
+    p
 }
