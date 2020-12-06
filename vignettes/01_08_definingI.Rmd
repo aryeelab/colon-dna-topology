@@ -1,0 +1,178 @@
+---
+title: "Defining I"
+output: html_document
+abstract: ""
+---
+
+
+```{r}
+
+devtools::load_all()
+
+data("compartmentGR")
+data("blocks")
+
+allBinData <- mcols( compartmentGR )
+
+mcols(compartmentGR)$block <- ifelse(
+                        seq_len(length(compartmentGR)) %in%
+                        queryHits( findOverlaps( compartmentGR, blocks, type="within" )),
+                        "block", "non-block" )
+
+ptCols <- grepl("_mean_eigen", colnames( mcols(compartmentGR) ) )
+compMatNorm <- as.matrix(mcols(compartmentGR)[,ptCols])
+
+compMatNorm <- compMatNorm[,grepl("BRD|MGH", colnames( compMatNorm ))]
+compMatNorm <- compMatNorm[,!duplicated(gsub(".sb|_mean_eigen", "", colnames( compMatNorm )))]
+colnames( compMatNorm ) <- gsub(".sb", "", colnames( compMatNorm ))
+
+meanNormalComp <- rowMeans(
+    compMatNorm[,grepl("N_mean_eigen", colnames(compMatNorm)),drop=FALSE],
+    na.rm=TRUE )
+
+meanTumorComp <- rowMeans(
+    compMatNorm[,grepl("(BRD|MGH)\\d+_mean_eigen", colnames(compMatNorm))],
+    na.rm=TRUE )
+
+dfLarge <- data.frame(
+    normalComp = meanNormalComp,
+    tumorComp = meanTumorComp,
+    compDiff = meanTumorComp - meanNormalComp,
+    block = mcols(compartmentGR)$block,
+    compartment = ifelse( meanNormalComp > 0, "A", "B" ) )
+
+compDiffMat <-
+    as.matrix( compMatNorm[,grepl("(MGH|BRD)\\d+_mean_eigen", colnames( compMatNorm ) )] ) -
+    dfLarge$normalComp
+
+colnames( compDiffMat ) <- gsub( "_mean_eigen", "", colnames( compDiffMat ) )
+rownames( compDiffMat ) <- names( compartmentGR )
+
+compDiffMat <- as.data.frame( compDiffMat )
+compDiffMat$block <- dfLarge$block
+compDiffMat$compartment <- dfLarge$compartment
+compDiffMat$binID <- rownames( compDiffMat )
+compDiffMat <-
+    reshape2::melt( compDiffMat,
+                   id.vars=c("binID", "block", "compartment"),
+                   value.name="compDiff" )
+
+
+dfLarge$block <- relevel( factor(dfLarge$block), 2 )
+
+mcols( compartmentGR ) <- DataFrame(dfLarge)
+
+library(Repitools)
+library(BSgenome.Hsapiens.UCSC.hg19)
+
+seqlengths(compartmentGR) <- seqlengths( BSgenome.Hsapiens.UCSC.hg19 )[names(seqlengths(compartmentGR))]
+gcCont <- gcContentCalc( trim(compartmentGR), BSgenome.Hsapiens.UCSC.hg19 )
+dfLarge$gcCont <- gcCont
+
+subComp <- ifelse( ( dfLarge$normalComp > 0 & dfLarge$block == "block"),
+                  "I", as.character(dfLarge$compartment) )
+
+subComp[which(as.character(dfLarge$block) == "non-block" & dfLarge$compartment == "B")] <- NA
+mcols( compartmentGR )$subComp <- subComp
+
+sum( mcols( compartmentGR )$subComp == "I", na.rm=TRUE ) / sum(!is.na( mcols( compartmentGR )$subComp ))
+
+sum(width(reduce(compartmentGR[which(mcols( compartmentGR )$subComp == "I"),])))/sum(width(compartmentGR))
+
+mean(width( reduce(compartmentGR[which(mcols( compartmentGR )$subComp == "I"),]) ))
+
+subComp0 <- ifelse( ( dfLarge$normalComp > 0 & dfLarge$block == "block"),
+                          "I", as.character(dfLarge$compartment) )
+subComp0[which(as.character(dfLarge$block) == "non-block" & dfLarge$compartment == "B")] <- NA
+mcols( compartmentGR )$subComp0 <- subComp0
+
+dfLarge$compartmentT <- ifelse( dfLarge$tumorComp > 0, "A", "B" )
+
+subCompT <- ifelse( ( dfLarge$tumorComp > 0 & dfLarge$block == "block"),
+                   "I", as.character(dfLarge$compartmentT) )
+
+
+subCompT[which(as.character(dfLarge$block) == "non-block" & dfLarge$compartmentT == "B")] <- NA
+mcols( compartmentGR )$subCompT <- subCompT
+iIdx <- compartmentGR$subComp0 == "I"
+
+sum(mcols(compartmentGR)$subComp == "I", na.rm=TRUE)/
+    sum(mcols(compartmentGR)$subComp %in% c("A", "I"), na.rm=TRUE)
+
+sum(mcols(compartmentGR)$subComp == "I", na.rm=TRUE)
+sum(mcols( compartmentGR )$subComp0[iIdx] == mcols( compartmentGR )$subCompT[iIdx], na.rm=TRUE)
+
+sum(mcols(compartmentGR)$compartment == "B" & mcols( compartmentGR )$block == "block", na.rm=TRUE)/sum( mcols(compartmentGR)$compartment == "B", na.rm=TRUE )
+save(compartmentGR, file="../data/compDiffObject.RData")
+
+```
+
+
+```{r}
+
+bins <- compartmentGR
+
+plotPCs <- function( mat, chrName, pcx, pcy, strict=0, xbreaks=c(-0.03, 0, 0.03) ){
+    print(chrName)
+    chr <- as.matrix(mat@resolutionNamedList[["100000"]][[chrName]])
+    chr[lower.tri(chr)] <- t(chr)[lower.tri(chr)]
+    matRanges <- GRanges(
+        chrName,
+        IRanges(
+            as.numeric( rownames( chr ) ) + 1,
+            as.numeric( rownames( chr ) ) + 100000 ) )
+    indexes <- seq_len( nrow( chr ) )
+    matrix <- chr
+    binsSub <- bins[seqnames( bins ) == chrName]
+    oeMat <- getObservedVsExpected( matrix[indexes,indexes] )
+    binsSub <- binsSub[indexes]
+    keep <- rep(TRUE, nrow(oeMat))
+    keep2 <- !rowSums( oeMat, na.rm=TRUE ) == 0
+    keep <- keep & keep2# & keep3
+    if( sum(keep) == 0 ){
+        return(NULL)
+    }
+    xx <- cor( oeMat[keep,keep] )
+    binsSub <- binsSub[keep]
+    center <- rowMeans2( xx, na.rm = TRUE )
+    matrix <- sweep( xx, 1L, center, check.margin = FALSE )
+    pcaRes <- minfi:::.fsvd( matrix, k = 5, method = "exact" )$u
+    pcaRes <- as.data.frame( pcaRes )
+    colnames( pcaRes ) <- c("PC1", "PC2", "PC3", "PC4", "PC5")
+    pcaRes$subComp <- NA
+    colValues <- c(A="#0002aa", I="#66BFE3", B="#f7cd46")
+    for( i in c("A", "I", "B")){
+        aRegions <- reduce( binsSub[which(binsSub$subComp == i)] )
+        aRegions <- aRegions[width( aRegions ) > strict]
+        pcaRes$subComp[queryHits(findOverlaps( binsSub, aRegions ))] <- i
+    }
+    pl <- pcaRes %>%
+        dplyr::select( pcx, pcy, subComp ) %>%
+        na.omit() %>%
+        ggplot( aes( get(pcx), get(pcy), col=subComp ) ) +
+        geom_point(alpha=0.8, size=0.6) +
+        labs(x=pcx, y=pcy, title=chrName) +
+        scale_color_manual(values=colValues) +
+        scale_x_continuous( breaks=xbreaks ) +
+        theme(legend.pos="none")
+    pl
+}
+
+data(hic_BRD3179N)
+
+```{r, fig.width=3, fig.height=3}
+library(sparseHiC)
+library(matrixStats)
+library(magrittr)
+library(ggplot2)
+library(cowplot)
+theme_set(theme_cowplot())
+
+plotPCs( hic_BRD3179N, "chr1", pcx="PC1", pcy="PC2")
+plotPCs( hic_BRD3179N, "chr12", pcx="PC1", pcy="PC2")
+plotPCs( hic_BRD3179N, "chr13", pcx="PC1", pcy="PC3")
+plotPCs( hic_BRD3179N, "chr20", pcx="PC1", pcy="PC2")
+
+```
+
+
