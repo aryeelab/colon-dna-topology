@@ -1,0 +1,174 @@
+
+
+```{r}
+
+devtools::load_all()
+library(bsseq)
+library(HDF5Array)
+
+bsseq <- loadHDF5SummarizedExperiment(system.file( "hdf5", "se_hdf5", package="ColonDNATopology" ))
+data(compartmentGR)
+
+comps2 <- compartmentGR
+mcols(comps2) <- NULL
+mcols(comps2) <- mcols(compartmentGR)[,grepl("wi\\S+_mean_opensea$", colnames(mcols(compartmentGR)))]
+
+mcols(comps2)$subCompWi38 <- ifelse(mcols(compartmentGR)$Wi38_16_mean_eigen>0, "A", "B")
+hypoMeth <- mcols(compartmentGR)$wi_38_p16_mean_opensea - mcols(compartmentGR)$wi_38_p40_mean_opensea
+mcols(comps2)$subCompWi38[mcols(compartmentGR)$Wi38_16_mean_eigen>0 & hypoMeth>0.1] <- "I"
+
+mcols(comps2)$middle <- start(resize( comps2, 1, fix="center" ))
+colnames(mcols(comps2)) <- gsub("wi_38_", "", colnames(mcols(comps2)))
+
+
+```
+
+```{r}
+
+luliPlot3 <- function( plotGR, iter=1, mergeReps=FALSE ){
+    compSub <- subsetByOverlaps(comps2, plotGR)
+    mcols(compSub)$subCompWi38 <- NULL
+    plotDf <- as.data.frame( mcols(compSub) ) %>%
+        reshape2::melt( id.vars=c("middle") ) %>%
+        ##tidyr::pivot_longer(cols=!matches("middle") ) %>%
+        dplyr::rename( sampleID=variable, meth=value ) %>%
+        dplyr::mutate(
+                   sampleType=dplyr::case_when(
+                                         grepl("hansen", sampleID) ~ "hansen",
+                                         grepl("^p", sampleID) ~ "passage",
+                                         grepl("MGH|BRD|Adenom", sampleID) ~ "wgbs" ) ) %>%
+        dplyr::mutate(
+                   cond=dplyr::case_when(
+                                   grepl("hansennormal|N$", sampleID) ~ "Normal",
+                                   grepl("hansencancer|BRD|MGH", sampleID) ~ "Tumor",
+                                   grepl("Adenoma", sampleID) ~ "Adenoma",
+                                   grepl("^p",  sampleID) ~ gsub("_\\d$", "", sampleID)))    
+    plotDf <- plotDf %>%
+        dplyr::filter( sampleType %in% c("hansen", "passage") |
+                       grepl("Adenoma", sampleID) ) %>%
+        dplyr::mutate( sampleType=gsub("wgbs", "hansen", sampleType) )
+    if( mergeReps ){
+        plotDf <- plotDf %>%
+            dplyr::group_by( middle, sampleType, cond ) %>%
+            dplyr::summarize(meth=mean(meth, na.rm=TRUE)) %>%
+            dplyr::mutate(sampleID=cond) %>%
+            as.data.frame()
+    }
+    plotDf <- plotDf %>%
+        dplyr::group_by( sampleID ) %>%
+        dplyr::group_modify( ~{
+            .x$meth <- minfi:::.meanSmoother( .x$meth, iter=iter )
+            .x
+        } ) %>%
+        as.data.frame
+    plottingFun <- function( plotDf, type ){
+        p1 <- dplyr::filter(plotDf, sampleType == type ) %>%
+            ggplot(aes( middle, meth, group=sampleID, col=cond ) ) +
+            geom_line() +
+            panel_border( colour="black", size=1 ) +
+            labs(colour="") +
+            xlim( start(plotGR), end(plotGR) ) +
+            xlab( sprintf("%s genomic coordinates (Mb)",
+                          as.character( seqnames( plotGR ) ) ) ) +
+            ylab("DNA Me") +
+            theme(axis.line=element_blank(), legend.pos="top") +
+            guides(colour=guide_legend(nrow=3)) +
+            scale_colour_manual(
+                values=c( Proliferating="#80808095", Senescent="#000000",
+                         p16="#000000", p30="#737373", p40="#bdbdbd",
+                         Tumor="#984ea399", Normal="#4daf4a99", Adenoma="#d95f0299" ) ) +
+            scale_x_continuous(labels=function(x){round(x/1000000, 2)})
+        p1
+    }
+    ##    p1 <- plotSubcompartmentHeatmap( compartmentGR, compartmentGR$subComp, plotGR )
+    p3 <- plotSubcompartmentHeatmap( comps2, comps2$subCompWi38, plotGR)
+    ##    p2 <- plottingFun(plotDf, type="hansen")
+    p4 <- plottingFun(plotDf, type="passage")
+    pAll <- ggarrange(
+    ##    p1 + theme(legend.pos="none", axis.text.x=element_blank(),
+    ##               plot.margin = margin(0, 0.01, 0, 0.05, "cm")),
+    ##    p2  + theme(legend.pos="none", axis.text.x=element_blank(),
+    ##                plot.margin = margin(0, 0.01, 0, 0.05, "cm")) + labs(x=""),
+        p3 + theme(legend.pos="none", axis.text.x=element_blank(),
+                   plot.margin = margin(0, 0.01, 0, 0.05, "cm")),
+        p4 + theme(legend.pos="none",
+                   plot.margin = margin(0, 0.01, 0.01, 0.05, "cm") ),
+        ncol=1, align="v", heights=c(##0.2, 1,
+                                     0.2, 1.1) )
+    pAll
+}
+
+library(ggplot2)
+library(cowplot)
+library(magrittr)
+library(ggpubr)
+theme_set(theme_cowplot())
+
+colnames(mcols(comps2)) <- gsub("_mean_opensea", "", colnames(mcols(comps2)))
+plotGR <- GRanges( "chr10", IRanges( 70000000, 95000000 ) )
+
+```
+
+```{r, fig.height=3.8, fig.width=3.8}
+
+print( luliPlot3( plotGR, iter=2, mergeReps=FALSE ) )
+
+```
+
+
+```{r, fig.height=3.8, fig.width=3.8}
+
+plotGR <- GRanges( "chr7", IRanges( 35000000, 57000000 ) )
+print( luliPlot3( plotGR, iter=2, mergeReps=TRUE ) )
+
+```
+
+```{r}
+
+methDat <- mcols(comps2)
+methDat$subComp <- methDat$subCompWi38
+methDat$subCompWi38 <- NULL
+
+methDat <- as.data.frame(methDat) %>%
+    tibble::rownames_to_column("binID") %>%
+    tidyr::pivot_longer(
+               cols=dplyr::matches("^p"),
+               names_to="sampleID", values_to="meth" ) %>%
+    na.omit()
+methDat$dataset <- "passage"
+methDat$sampleType <- methDat$sampleID
+
+plotMeanMethVals <- function(dt){
+    dfp <- methDat %>%
+        dplyr::filter( dataset==eval(dt)) %>%
+        dplyr::group_by( sampleID, sampleType, subComp, dataset ) %>%
+        dplyr::summarize( meth=mean(meth) )
+    dfSumm <- dfp %>%
+        dplyr::group_by( sampleType, subComp ) %>%
+        dplyr::summarize( meth=mean(meth) )
+    dfSumm$subComp <- factor( dfSumm$subComp, levels=c("A", "I", "B") )
+    dfp$subComp <- factor( dfp$subComp, levels=c("A", "I", "B") )
+    pfp <- dfp %>%
+        ggplot( aes( sampleType, meth, col=sampleType ) ) +
+        geom_jitter(width=0.15, alpha=0.5, size=0.7) +
+        geom_crossbar( data=dfSumm,
+                      aes(x=sampleType, y=meth, ymin=meth,
+                          ymax=meth, color=sampleType ),
+                      size=.4, width=0.75, alpha=0.4, inherit.aes=FALSE ) +
+        scale_colour_manual(
+            values=c( Proliferating="#80808095", Senescent="#000000",
+                     p16="#000000", p30="#737373", p40="#bdbdbd",
+                     T="#984ea399", N="#4daf4a99", A="#d95f0299" ) ) +
+        facet_wrap( ~ subComp, scales="free_x" ) +
+        panel_border(colour="black", size=1) +
+        theme(axis.line=element_blank(), legend.pos="none") +
+        labs( x="", y="DNA me" )
+    pfp
+}
+```
+
+
+```{r, fig.height=4.2, fig.width=4.2}
+p2 <- plotMeanMethVals("passage")
+print(p2)
+```

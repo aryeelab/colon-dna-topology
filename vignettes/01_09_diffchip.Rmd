@@ -1,0 +1,346 @@
+---
+title: "Differential ChIP"
+output: html_document
+abstract: ""
+---
+
+
+```{r}
+
+devtools::load_all()
+
+data(compartmentGR)
+data(compDiffObject)
+data(chipCountMat)
+
+## chipCountMat <- chipCountMat[,!colnames(chipCountMat) %in% c("MGH2834-K36me3", "BRD3162N-K36me3")]
+## save( chipCountMat, file="../data/chipCountMat.RData" )
+
+```
+
+## Heatmap
+
+```{r}
+countMat <- chipCountMat
+countMat <- countMat[,!grepl("HCT116", colnames(countMat))] 
+
+colD <- data.frame(
+    sampleID=sapply( strsplit( colnames( countMat ), "-" ), "[[", 1 ),
+    protein=sapply( strsplit( colnames( countMat ), "-" ), "[[", 2 ) )
+colD$type <- factor(ifelse( grepl("N$", as.character( colD$sampleID )),
+                           "Normal", "Tumor" ))
+
+```
+
+```{r}
+
+data(k27ac_data)
+countK27Ac <- k27Counts
+colD2 <- data.frame(
+    sampleID=sapply( strsplit( colnames( countK27Ac ), "-" ), "[[", 1 ),
+    protein=sapply( strsplit( colnames( countK27Ac ), "-" ), "[[", 2 ) )
+colD2$type <- factor(ifelse( grepl("N$", as.character( colD2$sampleID )), "Normal", "Tumor" ))
+
+data(compDiffObject)
+subComp <- mcols(compartmentGR)$subComp
+bins <- compartmentGR
+mcols( bins ) <- NULL
+mcols( bins )$subComp <- subComp
+
+```
+
+```{r}
+
+k27Peaks <- k27Peaks[seqnames( k27Peaks ) != "chrY"]
+names( k27Peaks ) <- rownames( countK27Ac )
+
+ovl <- findOverlaps( k27Peaks, bins )
+compPerPeak <- lapply( split( mcols(bins)$subComp[subjectHits(ovl)], names(k27Peaks)[queryHits( ovl )] ), unique)
+compPerPeak <- unlist( compPerPeak[lengths(compPerPeak) == 1] )
+
+mcols(k27Peaks)$subComp <- NA
+mcols(k27Peaks)[names(compPerPeak),"subComp"] <- compPerPeak
+
+library(SummarizedExperiment)
+library(DESeq2)
+k27acSE <- SummarizedExperiment( countK27Ac, colData=colD2, rowRanges=k27Peaks )
+assayNames(k27acSE) <- "counts"
+k27acSE <- as( k27acSE, "DESeqDataSet" )
+
+```
+
+
+```{r}
+
+chipSE <- SummarizedExperiment( countMat, colData=DataFrame(colD) )
+chipSE <- chipSE[,grepl("K27me3|K9me3|K27Ac|K36me3", colnames(chipSE))]
+rowRanges( chipSE ) <- granges(bins)
+rowData( chipSE )$subComp <- subComp
+chipSE <- chipSE[rowData( chipSE )$subComp %in% c("A", "B", "I"),]
+colData( chipSE )$readNum <- colSums( assays(chipSE)[[1]] )
+names(assays( chipSE )) <- "counts"
+
+```
+
+
+```{r}
+
+assays( chipSE )[["fractions"]] <- t(t( assays( chipSE )[[1]] )/colData( chipSE )$readNum) 
+
+wt <- table( rowData( chipSE )$subComp )/nrow(chipSE)
+wt <- 1/(wt/min(wt))
+
+fracts <- do.call( cbind, lapply( split( seq_len(nrow(chipSE)), rowData( chipSE )$subComp ),
+       function(x){
+           colSums( assays( chipSE )[["fractions"]][x,] )
+       } ) )
+fracts2 <- t(t(fracts)/as.vector(table( rowData( chipSE )$subComp )))
+fracts2 <- fracts2/rowSums(fracts2)
+
+means <- do.call( cbind, lapply( split( seq_len(nrow(chipSE)), rowData( chipSE )$subComp ),
+       function(x){
+           colMedians( assays( chipSE )[["fractions"]][x,] )
+       } ) )
+rownames( means ) <- colnames(chipSE)
+rownames( means ) <- gsub("\\.", "-", rownames( means ))
+rownames( fracts ) <- rownames( means )
+
+scores <- log2(means/rowMeans(means))
+scores <- scores - rowMeans(scores)
+data(compartmentGR)
+bins2 <- compartmentGR
+
+xx <- grepl("_mean_opensea", colnames(mcols( bins2 ))) & grepl("BRD|MGH", colnames(mcols( bins2 ))) & colSums( is.na( mcols(bins2) ) ) < 3000
+meanMeth <- do.call( cbind, lapply( split( seq_len( nrow( mcols( bins2 ) ) ), subComp ), function(y){
+    colMeans( as.matrix(mcols(bins2)[y,xx] ), na.rm=TRUE )
+} )[c("A", "B", "I")] )
+rownames( meanMeth ) <- gsub("_mean", "", rownames( meanMeth ))
+meanMeth <- as.data.frame( meanMeth*100 )
+#meanMeth <- meanMeth-rowMeans( meanMeth )
+meanMeth$type <- ifelse( grepl("N_", rownames( meanMeth )), "Normal", "Tumor" )
+meanMeth$sample <- gsub("_opensea", "", rownames( meanMeth ))
+
+scores <- rbind(
+#    reshape2::melt( meanMeth, value.name="score", varnames=c("sampleID", "subComp") ),
+    reshape2::melt( scores, value.name="score", varnames=c("sampleID", "subComp") ) )
+
+library(magrittr)
+scores <- scores %>%
+    tidyr::separate( col="sampleID", into=c("samp", "sampType"), sep="-|_" ) %>%
+    dplyr::mutate( group = ifelse( grepl( "N$", samp ), "Normal", "Tumor" ) )
+
+scores <- scores %>%
+    dplyr::group_by( sampType, subComp, group ) %>%
+    dplyr::summarize( score = mean(score) ) %>%
+    as.data.frame
+
+scores <- scores %>%
+    dplyr::group_by( sampType ) %>%
+    dplyr::mutate( score = scales::rescale( score,
+                                           from=c( -1*max(abs(score)), max(abs(score)) ),
+                                           to=c(-1, 1) ) ) %>%
+    as.data.frame
+
+scores$sampType <- gsub("opensea", "DNAme", gsub("K", "H3K", scores$sampType))
+scores$sampType <- factor( scores$sampType, levels=rev(c("H3K27Ac", "H3K36me3", "CTCF", "H3K27me3", "H3K9me3", "DNAme") ))
+scores$subComp <- factor( as.character( scores$subComp ), levels=c("A", "I", "B") )
+
+
+```
+
+
+```{r}
+
+data(summaryExprTCGA)
+summ <- exprTCGA 
+upT <- quantile( summ$normal.means, 0.85 )
+
+rnaScores <- summ %>%
+    dplyr::select( normal.means, subComp ) %>%
+    na.omit() %>%
+    dplyr::group_by( subComp ) %>%
+    dplyr::summarize( score = mean( normal.means ) ) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate( sampType="RNA",
+                  score =
+                      scales::rescale(
+                                  score,
+                                  from=c(0, upT),    
+                                  to=c(-1, 1) ) )
+
+
+scores2 <- scores %>%
+    dplyr::filter( group == "Normal", sampType != "DNAme" )
+
+scoresMeth <- meanMeth %>%
+    reshape2::melt( ) %>%
+    dplyr::mutate( value=value/100 ) %>%
+    dplyr::mutate( value=(value-mean(value))/sd(value) ) %>%
+    dplyr::group_by( type, variable ) %>%
+    dplyr::summarize( meanMeth=median( value ) ) %>%
+    reshape2::dcast( variable ~ type ) %>%
+    dplyr::mutate( methDiff=Normal-Tumor,
+                  methDiff=methDiff-mean(methDiff),
+                  methDiff=methDiff-min(methDiff) )
+scores2$group <- NULL
+scoresMeth$sampType <- "DNAme"
+scoresMeth <- dplyr::rename( scoresMeth, subComp=variable, score=methDiff ) %>%
+    dplyr::select( -Normal, -Tumor )
+scoresMeth$score <- scales::rescale( scoresMeth$score,
+                                    from=c(-max(abs( scoresMeth$score ))*1.2,
+                                           max(abs( scoresMeth$score ))*1.2 ),
+                                    to=c(-1, 1) )
+scoresMeth <- rbind( scores2, scoresMeth )
+scoresMeth$sampType <- droplevels( scoresMeth$sampType )
+
+scoresMeth <- rbind( scoresMeth, rnaScores )
+
+levels( scoresMeth$sampType ) <- c("DNAme (N-T)", "H3K9me3 (N)", "H3K27me3 (N)",
+                                   "H3K36me3 (N)", "H3K27Ac (N)", "RNA (N)")
+scoresMeth$sampType <- relevel( scoresMeth$sampType, 6 )
+
+```
+
+```{r fig.width=2.8, fig.height=2}
+
+library(ggplot2)
+library(RColorBrewer)
+library(cowplot)
+theme_set(theme_cowplot())
+
+scoresMeth %>%
+    ggplot( aes( subComp, sampType, fill=score ) ) +
+    geom_tile() +
+    scale_fill_gradientn(
+        colours = colorRampPalette( brewer.pal(9, "Greys"), bias=0.4 )(100),
+        breaks=c(-1, 0, 1 ), limits=c(-1, 1)) +
+    labs(x="", y="", fill="Score") +
+    panel_border(color="black", size=1) +
+    theme( axis.line=element_blank() )
+
+```
+
+## Plots
+
+
+```{r}
+
+library(limma)
+data(chipSamples)
+data(cnvs_40K)
+## chipSE <- chipSE[,!rownames(colData(chipSE)) %in% c("MGH2834-K36me3", "BRD3162N-K36me3")]
+chipSE
+
+prot <- "K9me3"
+
+library(S4Vectors)
+
+broadMarks <- do.call( rbind, lapply( c("K9me3", "K27me3"), function(prot){
+    print(prot)
+    kp <- colData( chipSE )$protein %in% prot
+    ch <- chipSE[,kp]
+    ch <- as( ch, "DESeqDataSet" )
+    colnames(ch) <- gsub( sprintf("-%s", prot), "", colnames(ch) )
+    ## names(assays(ch)) <- "counts"
+    ##design(ch) <- ~ 1
+    ch <- ch[as.character(seqnames( ch )) %in% as.character( seqnames( cnvs ) ),]
+    ##    ch <- estimateSizeFactors(ch)
+    cnts <- counts( ch, normalized=FALSE )
+    cnts <- t( t( cnts * 10^6 )/colSums( cnts ) )
+    rs <- as.data.frame( do.call(cbind,
+                                 lapply(
+                                     split( seq_len(ncol(cnts)),
+                                           ifelse( grepl("N$", colnames( cnts )), "Normal", "Tumor" ) ),
+                                     function(x){
+                                         rowMeans( cnts[,x,drop=FALSE] )
+                                     } ) ) )
+    res <- data.frame(
+        Normal=rs[,"Normal"],
+        Tumor=rs[,"Tumor"],
+        subComp=rowData(ch)$subComp,
+        log2FoldChangeMLE=log2(rs[,"Tumor"]/rs[,"Normal"]))
+    res$mark <- prot
+    res$binID <- rownames(ch)
+    res
+} ) )
+
+data(k27ac_data)
+
+k27acSE <- k27acSE[,!colnames(k27acSE) %in% "MGH2834-K27Ac"] 
+k27acSE <- k27acSE[seqnames(k27acSE) %in% seqnames(cnvs),]
+
+k27acSE <- estimateSizeFactors(k27acSE)
+
+cnts <- counts(k27acSE, normalized=FALSE)
+cnts <- t( t( cnts * 10^6 )/colSums( cnts ) )
+
+cnts <- vapply(
+    split( seq_len(ncol(cnts)), ifelse( grepl("N-", colnames( cnts )), "Normal", "Tumor" ) ),
+    function(x){
+        rowMeans(cnts[,x,drop=FALSE])
+    }, numeric(nrow(cnts)) )
+
+enhMark <- data.frame(
+    Normal=cnts[,"Normal"],
+    Tumor=cnts[,"Tumor"],
+    subComp=rowRanges(k27acSE)$subComp,
+    log2FoldChangeMLE=log2(cnts[,"Tumor"]/cnts[,"Normal"] ) )
+enhMark$binID <- rownames( k27acSE )
+
+enhMark <- as.data.frame( enhMark ) %>%
+    dplyr::filter( !is.na( subComp ) )
+enhMark$mark <- "K27Ac"
+enhMark$log2FoldChangeMLE <- enhMark$log2FoldChangeMLE-median( enhMark$log2FoldChangeMLE[is.finite(enhMark$log2FoldChangeMLE)])
+
+allMarks <- rbind( broadMarks, enhMark )
+
+allMarks$mark <- paste0( "H3", allMarks$mark )
+allMarks$subComp <- factor( allMarks$subComp, levels=c("A", "I", "B") )
+
+plotMarkFC3 <- function( mrk="H3K27Ac", ylims=NULL ){
+    as.data.frame( allMarks ) %>%
+        dplyr::filter( mark == mrk ) %>%
+        dplyr::group_by( subComp ) %>%
+        dplyr::filter(!is.infinite(log2FoldChangeMLE)) %>%
+        dplyr::summarize(
+                   meanlfc=mean(log2FoldChangeMLE, na.rm=TRUE),
+                   sdlfc=sd(log2FoldChangeMLE, na.rm=TRUE) ) %>%
+        ggplot( aes( subComp, meanlfc, col=subComp ) ) +
+        geom_point(size=2) +
+        geom_errorbar(aes(ymin = meanlfc-sdlfc, ymax = meanlfc+sdlfc), width = 0.2) +
+        coord_cartesian(ylim=ylims) +
+        facet_grid( ~eval(mrk) ) +
+        theme( axis.line=element_blank(), plot.margin = unit(c(.1,.1,.1,.1), "lines")) +
+        panel_border(color="black", size=1) +
+        scale_color_manual(
+            values=c( `A`="#0002aa", `B`="#f7cd46", `I`="#66BFE3" ) ) +
+        theme(legend.pos="none")
+}
+
+
+plotAllFCMeans <- function(fun=plotMarkFC){
+    p1 <- fun( mrk="H3K27Ac", ylims=c(-1.1, 1.35) ) +
+        scale_y_continuous(breaks=seq(-1, 1, 1))
+    p2 <- fun( mrk="H3K27me3", ylims=c(-0.35, 0.4) ) +
+        scale_y_continuous(breaks=seq(-0.25, 0.25, 0.25))
+    p3 <- fun( mrk="H3K9me3", ylims=c(-0.5, 0.4) ) +
+        scale_y_continuous(breaks=seq(-0.25, 0.25, 0.25))
+    ggarrange(
+        p1 + ylab(expression(Log[2]~"("*frac(Tumor,Normal)*")")) + xlab(""),
+        p2 + ylab("") + xlab("Compartment"),
+        p3 + ylab("") + xlab(""), align="h", ncol=3, widths=c(1.2, 1, 1))
+}
+
+library(ggpubr)
+theme_set(theme_cowplot())
+
+
+ll <- plotAllFCMeans( plotMarkFC3 )
+```
+
+```{r, fig.width=5.2, height=1.9}
+## png( "../output/plots/boxplot_chipfc_color_mds.png",
+##    height=1.9, width=5.2, unit="in", res=300 )
+print(ll)
+##dev.off()
+```
