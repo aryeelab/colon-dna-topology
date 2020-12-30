@@ -1,0 +1,89 @@
+
+```{r}
+
+library(magrittr)
+library(ggplot2)
+
+devtools::load_all()
+
+data(probesOligopainting)
+data(compDiffObject)
+probes <- probesSub
+compPT <- compartmentGR
+data(compartmentGR)
+
+ovl <- findOverlaps( probes, compPT )
+
+dfSumm <- data.frame(
+    probeID=names(probes)[queryHits(ovl)],
+    indexOvl=subjectHits(ovl),
+    chr=as.vector(seqnames(probes)[queryHits(ovl)]),
+    subCompPT=mcols(compPT)$subComp[subjectHits(ovl)],
+    subCompHCT=mcols(compPT)$subComp[subjectHits(ovl)] )
+
+dfSumm %>%
+    dplyr::filter( chr == "chr12" ) %>%
+    dplyr::select( probeID, subCompPT ) %>%
+    dplyr::group_by( subCompPT ) %>%
+    dplyr::summarize( dplyr::n() )
+
+dfSumm <-unique(dfSumm)
+dfSumm <- dfSumm[!dfSumm$probeID %in%
+                 as.character(dfSumm$probeID[duplicated(dfSumm$probeID)]),]
+
+dfSumm$subCompPT <- factor(as.character(dfSumm$subCompPT), levels=c("A", "I", "B") )
+
+dfSumm$HCT116_eigen <- mcols(compartmentGR)$HCT116.0h_mean_eigen[dfSumm$indexOvl]
+
+p2 <- dfSumm %>%
+    ggplot( aes(subCompPT, HCT116_eigen, col=subCompPT, fill=subCompPT)) +
+    geom_boxplot(outlier.shape=NA) +
+    scale_fill_manual(values=c(`A`="#0002aa70", `B`="#f7cd4670", `I`="#66BFE370")) +
+    scale_colour_manual(values=c(`A`="#0002aa", `B`="#f7cd46", `I`="#66BFE3")) +
+    labs(y="1st eigenvector (HCT116)", x="Probes", fill="", col="") +
+    theme(legend.pos="none")
+
+
+```
+
+```{r, fig.width=3.8, fig.height=3}
+p2
+```
+
+```{r}
+
+data(compDiffObject)
+comp <- compartmentGR
+
+chromosomeRanges <- reduce(trim(comp))
+rng <- chromosomeRanges[seqnames( chromosomeRanges ) == "chr12"]
+
+figComp <- plotSubcompartmentHeatmap( comp, mcols(comp)$subComp, rng ) +
+    theme(legend.pos="none") +
+    xlim(start(rng), end(rng))
+
+probesSub <- subsetByOverlaps( probes, rng )
+probesSub <- as.data.frame(probesSub)[,c("start", "end")]
+probesSub$vec <- "probe"
+
+figProbe <- probesSub %>%
+    ggplot( aes( xmin=start, xmax=end, ymin=0, ymax=1, col=vec ) ) +
+    geom_rect() +
+    scale_fill_manual( values=c(`probe`="black") ) +
+    scale_color_manual( values=c(`probe`="black") ) +
+    theme( axis.text.y=element_blank(),
+          axis.ticks=element_blank(),
+          axis.line=element_blank(),
+          legend.pos="none") +
+    xlim( start(rng), end(rng) )
+
+library(ggpubr)
+pr <- ggarrange( figComp, figProbe,
+                align="v", heights=c(.15, .15),
+                nrow=2)
+
+```
+
+```{r}
+pr
+```
